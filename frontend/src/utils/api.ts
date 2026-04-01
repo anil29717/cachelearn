@@ -1,17 +1,29 @@
-import { Course, Lesson, Enrollment, Blog } from '../types';
+import { LibraryFile, LibraryFolder } from '../types';
 
-// Resolve API base from env; default to local Express server on port 5000
-const ENV_BACKEND = (import.meta as any).env?.VITE_BACKEND_URL as string | undefined;
-const USE_PROXY = typeof window !== 'undefined';
-const API_BASE_URL = ENV_BACKEND ? `${ENV_BACKEND}/api` : (USE_PROXY ? '/api' : 'http://localhost:5000/api');
+// In the browser during `vite` dev, always use same-origin `/api` so the Vite proxy runs and
+// httpOnly session cookies work. (Pointing fetch at http://localhost:8080 breaks cookies across ports.)
+// In production builds, use VITE_BACKEND_URL when set (e.g. API on another host).
+const envBackend = (import.meta as any).env?.VITE_BACKEND_URL as string | undefined;
+const API_BASE_URL =
+  import.meta.env.DEV && typeof window !== 'undefined'
+    ? '/api'
+    : envBackend
+      ? `${String(envBackend).replace(/\/$/, '')}/api`
+      : typeof window !== 'undefined'
+        ? '/api'
+        : 'http://localhost:8080/api';
 
 export class ApiClient {
+  /** Optional Bearer header (e.g. legacy); primary auth is httpOnly cookie + credentials. */
   private accessToken: string | null = null;
 
   constructor() {
-    // Initialize with persisted token if available
     if (typeof window !== 'undefined') {
-      this.accessToken = window.localStorage.getItem('auth_token');
+      try {
+        window.localStorage.removeItem('auth_token');
+      } catch {
+        /* ignore */
+      }
     }
   }
 
@@ -36,6 +48,7 @@ export class ApiClient {
     try {
       response = await fetch(`${API_BASE_URL}${endpoint}`, {
         ...options,
+        credentials: 'include',
         headers,
       });
     } catch (e: any) {
@@ -46,8 +59,13 @@ export class ApiClient {
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-      console.error(`API Error at ${endpoint}:`, error);
-      
+      const silentUnauthorized =
+        response.status === 401 &&
+        (endpoint === '/auth/profile' || endpoint.startsWith('/auth/profile?'));
+      if (!silentUnauthorized) {
+        console.error(`API Error at ${endpoint}:`, error);
+      }
+
       // Create error object with code if available
       const errorObj: any = new Error(error.error || 'API request failed');
       if (error.code) {
@@ -60,7 +78,7 @@ export class ApiClient {
   }
 
   // Auth
-  async register(email: string, password: string, name: string, role: string = 'student') {
+  async register(email: string, password: string, name: string, role: string = 'employee') {
     return this.request<{ message: string }>('/auth/register', {
       method: 'POST',
       body: JSON.stringify({ email, password, name, role }),
@@ -68,9 +86,16 @@ export class ApiClient {
   }
 
   async login(email: string, password: string) {
-    return this.request<{ user: any; token: string }>('/auth/login', {
+    return this.request<{ user: any }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
+    });
+  }
+
+  async logout() {
+    return this.request<{ success: boolean }>('/auth/logout', {
+      method: 'POST',
+      body: JSON.stringify({}),
     });
   }
 
@@ -93,103 +118,63 @@ export class ApiClient {
     });
   }
 
-  // Courses
-  async getCourses(params?: { status?: string; category?: string; instructor_id?: string; difficulty?: 'basic' | 'intermediate' | 'advanced' }) {
-    const queryParams = new URLSearchParams(params as any).toString();
-    const endpoint = `/courses${queryParams ? `?${queryParams}` : ''}`;
-    return this.request<{ courses: Course[] }>(endpoint);
-  }
-
-  async getCourse(id: number | string) {
-    return this.request<{ course: Course; lessons: Lesson[] }>(`/courses/${String(id)}`);
-  }
-
-  async createCourse(data: Partial<Course>) {
-    return this.request<{ course: Course }>('/courses', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
-  }
-
-  async updateCourse(id: number, data: Partial<Course>) {
-    return this.request<{ course: Course }>(`/courses/${String(id)}`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    });
-  }
-
-  // Lessons
-  async createLesson(courseId: number, data: Partial<Lesson>) {
-    return this.request<{ lesson: Lesson }>(`/courses/${String(courseId)}/lessons`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
-  }
-
-  // Enrollments
-  async enroll(courseId: number, orderId?: string) {
-    return this.request<{ enrollment: Enrollment }>('/enrollments', {
-      method: 'POST',
-      body: JSON.stringify({ course_id: courseId, order_id: orderId }),
-    });
-  }
-
-  async getEnrollments() {
-    return this.request<{ enrollments: Enrollment[] }>('/enrollments');
-  }
-
-  // Progress
-  async updateProgress(courseId: number, lessonId: number, completed: boolean) {
-    return this.request<{ progress: number }>('/progress', {
-      method: 'POST',
-      body: JSON.stringify({ course_id: courseId, lesson_id: lessonId, completed }),
-    });
-  }
-
-  // Blogs
-  async getBlogs(params?: { status?: 'published' | 'draft'; category?: string; author_id?: string }) {
-    const queryParams = new URLSearchParams(params as any).toString();
-    const endpoint = `/blogs${queryParams ? `?${queryParams}` : ''}`;
-    return this.request<{ blogs: Blog[] }>(endpoint);
-  }
-
-  async getBlog(id: number | string) {
-    return this.request<{ blog: Blog }>(`/blogs/${String(id)}`);
-  }
-
-  async createBlog(data: { title: string; content?: string; featured_image_url?: string; category: string; status: 'draft' | 'published' }) {
-    return this.request<{ blog: Blog }>('/blogs', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
-  }
-
-  async updateBlog(id: number, data: Partial<{ title: string; content: string; featured_image_url: string; category: string; status: 'draft' | 'published' }>) {
-    return this.request<{ blog: Blog }>(`/blogs/${String(id)}`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    });
-  }
-
-  async deleteBlog(id: number) {
-    return this.request<{ success: boolean }>(`/blogs/${String(id)}`, {
-      method: 'DELETE',
-    });
-  }
-
-  async likeBlog(id: number | string) {
-    return this.request<{ success: boolean; liked: boolean; like_count: number }>(`/blogs/${String(id)}/like`, {
-      method: 'POST',
-    });
-  }
-
   // Admin
   async getUsers() {
-    return this.request<{ users: any[] }>('/admin/users');
+    return this.request<{ users: any[]; open_folders_count?: number }>('/admin/users');
   }
 
-  async getAdminStats() {
-    return this.request<{ stats: any }>('/admin/stats');
+  async createEmployee(data: { email: string; password: string; name: string }) {
+    return this.request<{ user: any }>('/admin/users', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getAdminLogs(params?: { page?: number; limit?: number }) {
+    const q = new URLSearchParams();
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    const qs = q.toString();
+    return this.request<{
+      logs: Array<{
+        id: number;
+        level: string;
+        action: string;
+        message: string | null;
+        user_id: number | null;
+        ip: string | null;
+        user_agent: string | null;
+        meta: string | null;
+        created_at: string;
+      }>;
+      total: number;
+      page: number;
+      limit: number;
+    }>(`/admin/logs${qs ? `?${qs}` : ''}`);
+  }
+
+  async updateUserStatus(userId: number, isActive: boolean) {
+    return this.request<{ user: any }>(`/admin/users/${userId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ is_active: isActive }),
+    });
+  }
+
+  async getAdminSummary() {
+    return this.request<{
+      summary: {
+        total_employees: number;
+        total_files: number;
+        recent_uploads: Array<{
+          id: number;
+          original_name: string;
+          mime_type: string;
+          file_size: number;
+          created_at: string;
+          folder_name: string;
+        }>;
+      };
+    }>('/admin/summary');
   }
 
   async deleteUser(id: number | string) {
@@ -208,73 +193,94 @@ export class ApiClient {
     });
   }
 
-  async uploadFile(formData: FormData) {
-    return this.request<{ filename: string; url: string }>('/media/upload', {
+  // Internal library
+  async createFolder(name: string, parentId?: number | null) {
+    return this.request<{ folder: LibraryFolder }>('/library/folders', {
       method: 'POST',
-      body: formData,
+      body: JSON.stringify({ name, parent_id: parentId ?? null }),
     });
   }
 
-  // Applications
-  async submitInstructorApplication(data: {
-    name: string;
-    email: string;
-    expertise: string;
-    experience_years: number;
-    portfolio_url?: string | null;
-    bio?: string;
-  }) {
-    return this.request<{ applicationId: number }>('/applications/instructor', {
-      method: 'POST',
+  async getFolders() {
+    return this.request<{ folders: LibraryFolder[] }>('/library/folders');
+  }
+
+  async deleteFolder(folderId: number) {
+    return this.request<{ success: boolean }>(`/library/folders/${folderId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async updateFolder(folderId: number, data: { visibility?: 'all' | 'restricted' }) {
+    return this.request<{ folder: LibraryFolder }>(`/library/folders/${folderId}`, {
+      method: 'PATCH',
       body: JSON.stringify(data),
     });
   }
 
-  async getInstructorApplications() {
-    return this.request<{ applications: any[] }>('/applications/instructor');
+  async getFolderAccess(folderId: number) {
+    return this.request<{ user_ids: number[] }>(`/library/folders/${folderId}/access`);
   }
 
-  async updateInstructorApplicationStatus(id: number | string, status: 'pending' | 'approved' | 'rejected' | 'verified') {
-    return this.request<{ success: boolean }>(`/applications/instructor/${id}/status`, {
+  async setFolderAccess(folderId: number, userIds: number[]) {
+    return this.request<{ success: boolean; user_ids: number[] }>(`/library/folders/${folderId}/access`, {
       method: 'PUT',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ user_ids: userIds }),
     });
   }
 
-  async sendApplicationVerificationEmail(id: number | string) {
-    return this.request<{ success: boolean }>(`/applications/instructor/${id}/verify-email`, {
-      method: 'POST',
+  async uploadFolderFile(
+    folderId: number,
+    formData: FormData,
+    options?: { onProgress?: (percent: number) => void }
+  ) {
+    if (!options?.onProgress) {
+      return this.request<{ file: LibraryFile }>(`/library/folders/${folderId}/files`, {
+        method: 'POST',
+        body: formData,
+      });
+    }
+
+    return new Promise<{ file: LibraryFile }>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE_URL}/library/folders/${folderId}/files`);
+      xhr.withCredentials = true;
+      if (this.accessToken) {
+        xhr.setRequestHeader('Authorization', `Bearer ${this.accessToken}`);
+      }
+
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable) return;
+        const percent = Math.round((event.loaded / event.total) * 100);
+        options.onProgress?.(percent);
+      };
+
+      xhr.onload = () => {
+        try {
+          const payload = JSON.parse(xhr.responseText || '{}');
+          if (xhr.status >= 200 && xhr.status < 300) {
+            options.onProgress?.(100);
+            resolve(payload);
+            return;
+          }
+          reject(new Error(payload.error || 'Upload failed'));
+        } catch {
+          reject(new Error('Upload failed'));
+        }
+      };
+      xhr.onerror = () => reject(new Error('Network error: failed to upload file'));
+      xhr.send(formData);
     });
   }
 
-  async submitJobApplication(data: {
-    name: string;
-    email: string;
-    role_applied: string;
-    resume_url: string;
-    cover_letter?: string;
-  }) {
-    return this.request<{ applicationId: number }>('/applications/hiring', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+  async getFolderFiles(folderId: number) {
+    return this.request<{ files: LibraryFile[] }>(`/library/folders/${folderId}/files`);
   }
 
-  async getJobApplications() {
-    return this.request<{ applications: any[] }>('/applications/hiring');
-  }
-
-  async updateJobApplicationStatus(id: number | string, status: 'pending' | 'approved' | 'rejected') {
-    return this.request<{ success: boolean }>(`/applications/hiring/${id}/status`, {
-      method: 'PUT',
-      body: JSON.stringify({ status }),
-    });
-  }
-
-  async sendContactMessage(data: { name: string; email: string; subject?: string; message: string }) {
-    return this.request<{ success: boolean }>('/contact', {
-      method: 'POST',
-      body: JSON.stringify(data),
+  async renameFolderFile(fileId: number, originalName: string) {
+    return this.request<{ file: LibraryFile }>(`/library/files/${fileId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ original_name: originalName }),
     });
   }
 }

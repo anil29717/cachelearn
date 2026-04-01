@@ -1,936 +1,1188 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { apiClient } from '../utils/api';
-import { Course, User } from '../types';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
-import { Badge } from '../components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { Users, BookOpen, DollarSign, ShoppingCart, TrendingUp, CheckCircle, XCircle, Clock, Trash2, Image as ImageIcon } from 'lucide-react';
-import { toast } from 'sonner';
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '../components/ui/hover-card';
-import AdminPaymentManager from '../components/AdminPaymentManager';
-import { io } from 'socket.io-client';
-import AdminPurchaseStream from '../components/AdminPurchaseStream';
-import { Input } from '../components/ui/input';
-import { Label } from '../components/ui/label';
-import { Textarea } from '../components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { LibraryFile, LibraryFolder, User } from '../types';
+import { toast } from '@/lib/toast';
+import { ConfirmDestructiveDialog } from '@/components/feedback/ConfirmDestructiveDialog';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
-import type { Blog } from '../types';
+import { Input } from '../components/ui/input';
+import { FolderTreeNav } from '../components/library/FolderTreeNav';
+import { openLibraryFile } from '../utils/libraryFileAccess';
+import { ChevronRight, FileText, LayoutDashboard, FolderTree, FolderOpen, Users as UsersIcon, Shield, Upload, Trash2, ScrollText } from 'lucide-react';
+import { Progress } from '../components/ui/progress';
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from '../components/ui/chart';
+import { Bar, BarChart, CartesianGrid, XAxis } from 'recharts';
+import { Switch } from '../components/ui/switch';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../components/ui/dialog';
+import { Checkbox } from '../components/ui/checkbox';
 
-interface Stats {
-  total_users: number;
-  total_courses: number;
-  total_enrollments: number;
-  total_orders: number;
-  total_revenue: number;
+const ADMIN_LOGS_PAGE_SIZE = 50;
+
+function folderBreadcrumb(folders: LibraryFolder[], folderId: number | null): LibraryFolder[] {
+  if (folderId == null) return [];
+  const byId = new Map(folders.map((f) => [f.id, f]));
+  const chain: LibraryFolder[] = [];
+  let cur: LibraryFolder | undefined = byId.get(folderId);
+  while (cur) {
+    chain.unshift(cur);
+    cur = cur.parent_id != null ? byId.get(cur.parent_id) : undefined;
+  }
+  return chain;
+}
+
+function folderFullPath(folders: LibraryFolder[], folderId: number): string {
+  return folderBreadcrumb(folders, folderId)
+    .map((f) => f.name)
+    .join(' / ');
+}
+
+/** Normalize DB / API values (0/1, string, boolean) for the Active switch. */
+function isUserActive(u: { is_active?: unknown }) {
+  return Number(u?.is_active) === 1;
+}
+
+function describeUserFolderAccess(u: User & { restricted_folder_access?: Array<{ path: string }> }, openFoldersCount: number) {
+  if (u.role === 'admin') {
+    return 'Full access — all folders and files.';
+  }
+  const lines: string[] = [];
+  if (openFoldersCount > 0) {
+    lines.push(`${openFoldersCount} “all employees” folder(s) (everyone can open).`);
+  }
+  const grants = u.restricted_folder_access || [];
+  if (grants.length) {
+    lines.push(`Restricted (assigned): ${grants.map((g) => g.path).join(' · ')}`);
+  } else {
+    lines.push('No per-user restricted folders assigned.');
+  }
+  return lines.join(' ');
 }
 
 export function AdminDashboard() {
   const navigate = useNavigate();
-  const { user, signOut } = useAuth();
-  const [stats, setStats] = useState<Stats | null>(null);
+  const { user, loading: authLoading } = useAuth();
   const [users, setUsers] = useState<User[]>([]);
-  const [courses, setCourses] = useState<Course[]>([]);
+  const [folders, setFolders] = useState<LibraryFolder[]>([]);
+  const [selectedFolderId, setSelectedFolderId] = useState<number | null>(null);
+  const [files, setFiles] = useState<LibraryFile[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadPercent, setUploadPercent] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [applications, setApplications] = useState<any[]>([]);
-  const [jobApplications, setJobApplications] = useState<any[]>([]);
-  const updateJobApplicationStatus = async (id: number, status: 'approved' | 'rejected' | 'pending') => {
+  const [pendingFolderDeleteId, setPendingFolderDeleteId] = useState<number | null>(null);
+  const [pendingUserDelete, setPendingUserDelete] = useState<{ id: number; email: string } | null>(null);
+  const [activeSection, setActiveSection] = useState<
+    'dashboard' | 'content' | 'upload' | 'folders' | 'users' | 'logs'
+  >('content');
+  const [summary, setSummary] = useState<{
+    total_employees: number;
+    total_files: number;
+    recent_uploads: Array<{
+      id: number;
+      original_name: string;
+      mime_type: string;
+      file_size: number;
+      created_at: string;
+      folder_name: string;
+    }>;
+  } | null>(null);
+
+  const [accessOpen, setAccessOpen] = useState(false);
+  const [accessLoading, setAccessLoading] = useState(false);
+  const [accessUserIds, setAccessUserIds] = useState<number[]>([]);
+  const [assignedEmployeeCount, setAssignedEmployeeCount] = useState<number | null>(null);
+  const [uploadRootId, setUploadRootId] = useState<number | null>(null);
+  const [uploadSubfolderValue, setUploadSubfolderValue] = useState<string>('');
+  const [lastUploadedFile, setLastUploadedFile] = useState<LibraryFile | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [renameSaving, setRenameSaving] = useState(false);
+  const [contentFilter, setContentFilter] = useState<'folder' | 'all'>('folder');
+  const [allFiles, setAllFiles] = useState<Array<LibraryFile & { folder_name: string }>>([]);
+  const [allFilesLoading, setAllFilesLoading] = useState(false);
+  const [openFoldersCount, setOpenFoldersCount] = useState(0);
+  const [assignedNames, setAssignedNames] = useState<string[]>([]);
+  const [newEmployeeName, setNewEmployeeName] = useState('');
+  const [newEmployeeEmail, setNewEmployeeEmail] = useState('');
+  const [newEmployeePassword, setNewEmployeePassword] = useState('');
+  const [creatingEmployee, setCreatingEmployee] = useState(false);
+  const [logs, setLogs] = useState<any[]>([]);
+  const [logsTotal, setLogsTotal] = useState(0);
+  const [logsPage, setLogsPage] = useState(1);
+  const [logsLoading, setLogsLoading] = useState(false);
+
+  const loadData = useCallback(async (selectId?: number | null) => {
+    const [usersRes, foldersRes, summaryRes] = await Promise.all([
+      apiClient.getUsers(),
+      apiClient.getFolders(),
+      apiClient.getAdminSummary(),
+    ]);
+    setUsers(usersRes.users);
+    setOpenFoldersCount(typeof usersRes.open_folders_count === 'number' ? usersRes.open_folders_count : 0);
+    setFolders(foldersRes.folders);
+    setSummary(summaryRes.summary);
+    const pick =
+      selectId != null && foldersRes.folders.some((f) => f.id === selectId)
+        ? selectId
+        : foldersRes.folders[0]?.id ?? null;
+    setSelectedFolderId(pick);
+    if (pick) {
+      const filesRes = await apiClient.getFolderFiles(pick);
+      setFiles(filesRes.files);
+    } else {
+      setFiles([]);
+    }
+  }, []);
+
+  const loadAllFiles = useCallback(async () => {
+    setAllFilesLoading(true);
     try {
-      await apiClient.updateJobApplicationStatus(id, status);
-      toast.success('Job application status updated');
-      setJobApplications((prev) => prev.map((a) => (a.id === id ? { ...a, status } : a)));
+      const rows = await Promise.all(
+        folders.map(async (f) => {
+          const res = await apiClient.getFolderFiles(f.id);
+          return res.files.map((file) => ({ ...file, folder_name: f.name }));
+        })
+      );
+      setAllFiles(rows.flat());
     } catch (err) {
-      console.error('Update job application status error:', err);
-      toast.error('Failed to update job application');
-    }
-  };
-  const [userSummaries, setUserSummaries] = useState<Record<number, any>>({});
-  const [deletingUserId, setDeletingUserId] = useState<number | null>(null);
-  const [tab, setTab] = useState<'users'|'courses'|'analytics'|'payments'|'applications'|'blog'>('users');
-  const [blogs, setBlogs] = useState<Blog[]>([]);
-  const [blogTitle, setBlogTitle] = useState('');
-  const [blogCategory, setBlogCategory] = useState('');
-  const [blogStatus, setBlogStatus] = useState<'draft'|'published'>('draft');
-  const [blogContent, setBlogContent] = useState('');
-  const [blogImageFile, setBlogImageFile] = useState<File | null>(null);
-
-  const handleToggleCourseStatus = async (courseId: number, currentStatus: string) => {
-    try {
-      const next = currentStatus === 'published' ? 'draft' : 'published';
-      await apiClient.updateCourse(courseId, { status: next });
-      toast.success(`Course ${next === 'published' ? 'published' : 'unpublished'}`);
-      // Refresh courses list
-      const { courses: updated } = await apiClient.getCourses();
-      setCourses(updated);
-    } catch (error) {
-      console.error('Admin toggle course status error:', error);
-      toast.error('Failed to update course status');
-    }
-  };
-
-  const fetchUserSummary = async (id: number) => {
-    try {
-      if (userSummaries[id]) return;
-      const { summary } = await apiClient.getUserSummary(id);
-      setUserSummaries((prev) => ({ ...prev, [id]: summary }));
-    } catch (err) {
-      console.error('Load user summary error:', err);
-    }
-  };
-
-  const handleDeleteUser = async (id: number) => {
-    const target = users.find((u) => u.id === id);
-    if (!target) return;
-    const ok = window.confirm(`Delete user "${target.name}" (${target.role})?`);
-    if (!ok) return;
-    try {
-      setDeletingUserId(id);
-      const res = await apiClient.deleteUser(id);
-      if (res && res.success) {
-        toast.success('User deleted');
-        setUsers((prev) => prev.filter((u) => u.id !== id));
-      } else {
-        toast.error('Failed to delete user');
-      }
-    } catch (err: any) {
-      console.error('Delete user error:', err);
-      const msg = err?.code === 'LAST_ADMIN'
-        ? 'Cannot delete the last remaining admin'
-        : err?.code === 'SELF_DELETE'
-        ? 'You cannot delete yourself'
-        : err?.message || 'Failed to delete user';
-      toast.error(msg);
+      console.error(err);
+      toast.error('Failed to load all files');
     } finally {
-      setDeletingUserId(null);
+      setAllFilesLoading(false);
     }
-  };
+  }, [folders]);
+
+  const loadLogs = useCallback(async (page: number) => {
+    setLogsLoading(true);
+    try {
+      const res = await apiClient.getAdminLogs({ page, limit: ADMIN_LOGS_PAGE_SIZE });
+      setLogs(res.logs);
+      setLogsTotal(res.total);
+    } catch {
+      toast.error('Failed to load logs');
+    } finally {
+      setLogsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
+    if (activeSection !== 'logs') return;
+    loadLogs(logsPage);
+  }, [activeSection, logsPage, loadLogs]);
+
+  useEffect(() => {
+    if (authLoading) return;
     if (!user) {
       navigate('/login');
       return;
     }
     if (user.role !== 'admin') {
-      toast.error('Access denied');
-      navigate('/');
+      navigate('/profile');
       return;
     }
-    loadDashboardData();
-    // Real-time connection
-    const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
-    const socket = io(backendBase, {
-      transports: ['websocket'],
-      reconnection: true,
-    });
-    let pollInterval: any = null;
-    socket.on('connect', () => {
-      // noop
-      if (pollInterval) {
-        clearInterval(pollInterval);
-        pollInterval = null;
-      }
-    });
-    socket.on('payment_captured', async () => {
+    loadData()
+      .catch((err) => {
+        console.error(err);
+        toast.error('Failed to load admin data');
+      })
+      .finally(() => setLoading(false));
+  }, [user, authLoading, navigate, loadData]);
+
+  useEffect(() => {
+    if (contentFilter === 'all') {
+      loadAllFiles();
+    }
+  }, [contentFilter, loadAllFiles]);
+
+  const totals = useMemo(() => {
+    const totalFiles = folders.reduce((sum, f) => sum + Number(f.file_count || 0), 0);
+    const totalEmployees = users.filter((u) => u.role === 'employee').length;
+    const restrictedFolders = folders.filter((f) => String(f.visibility || 'all') === 'restricted').length;
+    return { totalFiles, totalEmployees, totalFolders: folders.length, restrictedFolders };
+  }, [folders, users]);
+
+  const filesByType = useMemo(() => {
+    const items = summary?.recent_uploads || [];
+    const buckets: Record<string, number> = {};
+    for (const f of items) {
+      const mt = String(f.mime_type || '');
+      const key = mt.startsWith('video/')
+        ? 'Video'
+        : mt === 'application/pdf'
+        ? 'PDF'
+        : mt.includes('wordprocessingml') || mt === 'application/msword'
+        ? 'DOC'
+        : 'Other';
+      buckets[key] = (buckets[key] || 0) + 1;
+    }
+    return Object.entries(buckets).map(([type, count]) => ({ type, count }));
+  }, [summary]);
+
+  const breadcrumb = useMemo(
+    () => folderBreadcrumb(folders, selectedFolderId),
+    [folders, selectedFolderId]
+  );
+
+  const selectedFolder = useMemo(
+    () => (selectedFolderId ? folders.find((f) => f.id === selectedFolderId) || null : null),
+    [folders, selectedFolderId]
+  );
+  const rootFolders = useMemo(() => folders.filter((f) => f.parent_id == null), [folders]);
+  const uploadSubfolders = useMemo(
+    () => folders.filter((f) => f.parent_id === uploadRootId),
+    [folders, uploadRootId]
+  );
+
+  const employees = useMemo(
+    () => users.filter((u: any) => u.role === 'employee'),
+    [users]
+  );
+
+  const refreshAssignedCount = useCallback(async () => {
+    if (!selectedFolderId) {
+      setAssignedEmployeeCount(null);
+      return;
+    }
+    try {
+      const res = await apiClient.getFolderAccess(selectedFolderId);
+      setAssignedEmployeeCount(res.user_ids.length);
+    } catch {
+      setAssignedEmployeeCount(null);
+    }
+  }, [selectedFolderId]);
+
+  useEffect(() => {
+    if (String(selectedFolder?.visibility || 'all') !== 'restricted') {
+      setAssignedEmployeeCount(null);
+      return;
+    }
+    refreshAssignedCount();
+  }, [selectedFolder?.visibility, refreshAssignedCount]);
+
+  useEffect(() => {
+    if (!selectedFolderId || String(selectedFolder?.visibility || 'all') !== 'restricted') {
+      setAssignedNames([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
       try {
-        toast.success('Payment captured');
-        const statsResult = await apiClient.getAdminStats();
-        setStats(statsResult.stats);
-      } catch {}
-    });
-    socket.on('enrollment_created', async () => {
-      try {
-        toast.info('New enrollment');
-        const statsResult = await apiClient.getAdminStats();
-        setStats(statsResult.stats);
-      } catch {}
-    });
-    socket.on('disconnect', () => {
-      if (!pollInterval) {
-        pollInterval = setInterval(async () => {
-          try {
-            const statsResult = await apiClient.getAdminStats();
-            setStats(statsResult.stats);
-          } catch {}
-        }, 20000);
+        const res = await apiClient.getFolderAccess(selectedFolderId);
+        const ids = res.user_ids || [];
+        const names = ids.map((id: number) => {
+          const row = users.find((x) => x.id === id);
+          return row?.name || `User #${id}`;
+        });
+        if (!cancelled) setAssignedNames(names);
+      } catch {
+        if (!cancelled) setAssignedNames([]);
       }
-    });
+    })();
     return () => {
-      socket.close();
-      if (pollInterval) clearInterval(pollInterval);
+      cancelled = true;
     };
-  }, [user]);
+  }, [selectedFolderId, selectedFolder?.visibility, users]);
 
-  const loadDashboardData = async () => {
+  useEffect(() => {
+    if (uploadRootId == null && rootFolders.length) {
+      setUploadRootId(rootFolders[0].id);
+    }
+  }, [uploadRootId, rootFolders]);
+
+  const onSelectFolder = async (folderId: number) => {
+    setSelectedFolderId(folderId);
     try {
-      const [statsResult, usersResult, coursesResult, applicationsResult, jobApplicationsResult, blogsResult] = await Promise.all([
-        apiClient.getAdminStats(),
-        apiClient.getUsers(),
-        apiClient.getCourses(),
-        apiClient.getInstructorApplications(),
-        apiClient.getJobApplications(),
-        apiClient.getBlogs(),
-      ]);
-
-      setStats(statsResult.stats);
-      setUsers(usersResult.users);
-      setCourses(coursesResult.courses);
-      setApplications(applicationsResult.applications || []);
-      setJobApplications(jobApplicationsResult.applications || []);
-      setBlogs(blogsResult.blogs || []);
-    } catch (error) {
-      console.error('Error loading dashboard data:', error);
-      toast.error('Failed to load dashboard data');
-    } finally {
-      setLoading(false);
+      const res = await apiClient.getFolderFiles(folderId);
+      setFiles(res.files);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to load folder files');
     }
   };
 
-  const resetBlogForm = () => {
-    setBlogTitle('');
-    setBlogCategory('');
-    setBlogStatus('draft');
-    setBlogContent('');
-    setBlogImageFile(null);
+  const onCreateRoot = async (name: string) => {
+    const res = await apiClient.createFolder(name, null);
+    await loadData(res.folder.id);
+    toast.success('Folder created');
   };
 
-  const handleCreateBlog = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const onCreateSubfolder = async (parentId: number, name: string) => {
+    await apiClient.createFolder(name, parentId);
+    // Keep the parent selected so admins can add multiple sibling subfolders quickly.
+    await loadData(parentId);
+    toast.success('Subfolder created');
+  };
+
+  const onDeleteFolder = (folderId: number) => {
+    setPendingFolderDeleteId(folderId);
+  };
+
+  const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!uploadRootId) return;
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    let targetFolderId: number | null = null;
     try {
-      let imageUrl: string | undefined = undefined;
-      if (blogImageFile) {
-        const formData = new FormData();
-        formData.append('file', blogImageFile);
-        const { url } = await apiClient.uploadFile(formData);
-        const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
-        imageUrl = `${backendBase}${url}`;
+      if (uploadSubfolderValue && uploadSubfolderValue !== '__other__') {
+        targetFolderId = Number(uploadSubfolderValue);
+      } else {
+        const existingOther = uploadSubfolders.find((f) => f.name.trim().toLowerCase() === 'other');
+        if (existingOther) {
+          targetFolderId = existingOther.id;
+        } else {
+          const created = await apiClient.createFolder('Other', uploadRootId);
+          targetFolderId = created.folder.id;
+        }
       }
-      const { blog } = await apiClient.createBlog({
-        title: blogTitle,
-        category: blogCategory,
-        status: blogStatus,
-        content: blogContent || undefined,
-        featured_image_url: imageUrl,
+      if (!targetFolderId) {
+        toast.error('Please select a valid subfolder');
+        return;
+      }
+      setUploading(true);
+      setUploadPercent(0);
+      const uploadRes = await apiClient.uploadFolderFile(targetFolderId, formData, {
+        onProgress: (percent) => setUploadPercent(percent),
       });
-      toast.success('Blog created');
-      setBlogs((prev) => [blog, ...prev]);
-      resetBlogForm();
-    } catch (err) {
-      console.error('Create blog error:', err);
-      toast.error('Failed to create blog');
-    }
-  };
-
-  const handleToggleBlogStatus = async (id: number, current: 'draft'|'published') => {
-    try {
-      const next = current === 'published' ? 'draft' : 'published';
-      const { blog } = await apiClient.updateBlog(id, { status: next });
-      setBlogs((prev) => prev.map((b) => b.id === id ? blog : b));
-      toast.success(next === 'published' ? 'Blog published' : 'Blog moved to draft');
-    } catch (err) {
-      console.error('Update blog status error:', err);
-      toast.error('Failed to update blog');
-    }
-  };
-
-  const handleDeleteBlog = async (id: number) => {
-    const ok = window.confirm('Delete this blog post?');
-    if (!ok) return;
-    try {
-      const res = await apiClient.deleteBlog(id);
-      if (res?.success) {
-        setBlogs((prev) => prev.filter((b) => b.id !== id));
-        toast.success('Blog deleted');
-      } else {
-        toast.error('Failed to delete blog');
-      }
-    } catch (err) {
-      console.error('Delete blog error:', err);
-      toast.error('Failed to delete blog');
-    }
-  };
-
-  const updateApplicationStatus = async (id: number, status: 'pending' | 'approved' | 'rejected' | 'verified') => {
-    try {
-      await apiClient.updateInstructorApplicationStatus(id, status);
-      toast.success('Application status updated');
-      // Update local state
-      setApplications((prev) => prev.map((a) => (a.id === id ? { ...a, status } : a)));
-      if (status === 'approved') {
-        // Refresh users and navigate to Users tab
-        try {
-          const res = await apiClient.getUsers();
-          setUsers(res.users);
-        } catch {}
-        setTab('users');
-      }
-    } catch (err) {
-      console.error('Update application status error:', err);
-      toast.error('Failed to update status');
-    }
-  };
-
-  const sendVerification = async (id: number) => {
-    try {
-      const res = await apiClient.sendApplicationVerificationEmail(id);
-      if (res?.success) {
-        toast.success('Verification email sent');
-      } else {
-        toast.error('Failed to send verification email');
-      }
+      await loadData(targetFolderId);
+      setUploadRootId(uploadRootId);
+      setUploadSubfolderValue(String(targetFolderId));
+      setLastUploadedFile(uploadRes.file);
+      setRenameValue(uploadRes.file.original_name);
+      toast.success('File uploaded');
     } catch (err: any) {
-      console.error('Send verification email error:', err);
-      const msg = err?.code === 'USER_NOT_FOUND'
-        ? 'No user account found for this email'
-        : err?.message || 'Failed to send verification email';
-      toast.error(msg);
+      toast.error(err?.message || 'Failed to upload file');
+    } finally {
+      setUploading(false);
+      setUploadPercent(0);
+      e.target.value = '';
     }
   };
 
-  if (!user || user.role !== 'admin') {
-    return null;
+  if (authLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gray-50">
+        <p className="text-gray-600">Loading session…</p>
+      </div>
+    );
   }
-
+  if (!user || user.role !== 'admin') return null;
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900 mx-auto"></div>
-          <p className="mt-4">Loading dashboard...</p>
-        </div>
+      <div className="flex min-h-screen items-center justify-center bg-gray-50">
+        <p className="text-gray-600">Loading admin panel…</p>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="container mx-auto px-4 py-12">
-        {/* Header */}
-        <div className="mb-8 flex items-center justify-between">
-          <div>
-            <h1 className="mb-2">Admin Dashboard</h1>
-            <p className="text-gray-600">Platform overview and management</p>
-          </div>
+    <div className="flex h-[calc(100vh-3.5rem)] bg-gray-50 overflow-hidden">
+      <aside className="flex w-72 shrink-0 h-full flex-col border-r border-gray-200 bg-white shadow-sm">
+        <div className="border-b border-gray-100 p-4">
+          <h2 className="text-lg font-semibold text-gray-900">Admin</h2>
+          <p className="text-xs text-gray-500">Content hub navigation</p>
+        </div>
+
+        <nav className="p-3 space-y-1">
           <button
-            onClick={() => navigate('/debug/config')}
-            className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+            type="button"
+            onClick={() => setActiveSection('dashboard')}
+            className={`w-full rounded-md px-3 py-2 text-left text-sm flex items-center gap-2 ${
+              activeSection === 'dashboard' ? 'bg-red-50 text-red-700' : 'hover:bg-gray-100 text-gray-700'
+            }`}
           >
-            Check Configuration
+            <LayoutDashboard className="h-4 w-4" /> Dashboard
           </button>
-        </div>
+          <button
+            type="button"
+            onClick={() => setActiveSection('content')}
+            className={`w-full rounded-md px-3 py-2 text-left text-sm flex items-center gap-2 ${
+              activeSection === 'content' ? 'bg-red-50 text-red-700' : 'hover:bg-gray-100 text-gray-700'
+            }`}
+          >
+            <FolderOpen className="h-4 w-4" /> Content
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveSection('upload')}
+            className={`w-full rounded-md px-3 py-2 text-left text-sm flex items-center gap-2 ${
+              activeSection === 'upload' ? 'bg-red-50 text-red-700' : 'hover:bg-gray-100 text-gray-700'
+            }`}
+          >
+            <Upload className="h-4 w-4" /> Upload
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveSection('folders')}
+            className={`w-full rounded-md px-3 py-2 text-left text-sm flex items-center gap-2 ${
+              activeSection === 'folders' ? 'bg-red-50 text-red-700' : 'hover:bg-gray-100 text-gray-700'
+            }`}
+          >
+            <FolderTree className="h-4 w-4" /> Folders
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveSection('users')}
+            className={`w-full rounded-md px-3 py-2 text-left text-sm flex items-center gap-2 ${
+              activeSection === 'users' ? 'bg-red-50 text-red-700' : 'hover:bg-gray-100 text-gray-700'
+            }`}
+          >
+            <UsersIcon className="h-4 w-4" /> Users
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setLogsPage(1);
+              setActiveSection('logs');
+            }}
+            className={`w-full rounded-md px-3 py-2 text-left text-sm flex items-center gap-2 ${
+              activeSection === 'logs' ? 'bg-red-50 text-red-700' : 'hover:bg-gray-100 text-gray-700'
+            }`}
+          >
+            <ScrollText className="h-4 w-4" /> Logs
+          </button>
+        </nav>
+      </aside>
 
-        {/* Stats Cards */}
-        <div className="grid md:grid-cols-5 gap-6 mb-8">
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600 mb-1">Total Users</p>
-                  <p className="text-2xl">{stats?.total_users || 0}</p>
-                </div>
-                <Users className="h-8 w-8 text-red-600" />
-              </div>
-            </CardContent>
-          </Card>
+      <div className="flex min-w-0 flex-1 h-full flex-col">
+        <header className="border-b border-gray-200 bg-white px-6 py-4">
+          <div>
+            <h1 className="text-xl font-semibold text-gray-900">Admin Panel</h1>
+            <p className="text-sm text-gray-600">Internal content hub management</p>
+          </div>
+        </header>
 
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600 mb-1">Total Courses</p>
-                  <p className="text-2xl">{stats?.total_courses || 0}</p>
-                </div>
-                <BookOpen className="h-8 w-8 text-green-600" />
-              </div>
-            </CardContent>
-          </Card>
+        <main className="flex-1 overflow-y-auto space-y-4 p-6">
+          {activeSection === 'dashboard' && (
+            <div className="space-y-5">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+              <Card
+                className="shadow-sm cursor-pointer hover:shadow-md transition-shadow"
+                onClick={() => setActiveSection('content')}
+                role="button"
+                tabIndex={0}
+              >
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium text-gray-600">Total files</CardTitle>
+                </CardHeader>
+                <CardContent className="text-2xl font-semibold">{summary?.total_files ?? totals.totalFiles}</CardContent>
+              </Card>
+              <Card
+                className="shadow-sm cursor-pointer hover:shadow-md transition-shadow"
+                onClick={() => setActiveSection('users')}
+                role="button"
+                tabIndex={0}
+              >
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium text-gray-600">Employees</CardTitle>
+                </CardHeader>
+                <CardContent className="text-2xl font-semibold">{summary?.total_employees ?? totals.totalEmployees}</CardContent>
+              </Card>
+              <Card
+                className="shadow-sm cursor-pointer hover:shadow-md transition-shadow"
+                onClick={() => setActiveSection('content')}
+                role="button"
+                tabIndex={0}
+              >
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium text-gray-600">Restricted folders</CardTitle>
+                </CardHeader>
+                <CardContent className="text-2xl font-semibold">{totals.restrictedFolders}</CardContent>
+              </Card>
+              <Card
+                className="shadow-sm cursor-pointer hover:shadow-md transition-shadow"
+                onClick={() => setActiveSection('folders')}
+                role="button"
+                tabIndex={0}
+              >
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium text-gray-600">Folders (incl. subfolders)</CardTitle>
+                </CardHeader>
+                <CardContent className="text-2xl font-semibold">{totals.totalFolders}</CardContent>
+              </Card>
+            </div>
 
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600 mb-1">Enrollments</p>
-                  <p className="text-2xl">{stats?.total_enrollments || 0}</p>
-                </div>
-                <TrendingUp className="h-8 w-8 text-red-600" />
-              </div>
-            </CardContent>
-          </Card>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <Card className="shadow-sm h-[360px] flex flex-col">
+                <CardHeader>
+                  <CardTitle className="text-base">Recent uploads</CardTitle>
+                </CardHeader>
+                <CardContent className="flex-1 overflow-y-auto">
+                  <div className="space-y-2 pr-1">
+                    {(summary?.recent_uploads || []).map((u) => (
+                      <div
+                        key={u.id}
+                        className="flex items-center justify-between gap-3 rounded-md border border-gray-100 p-3 hover:bg-gray-50"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate font-medium text-gray-900">{u.original_name}</div>
+                          <div className="text-xs text-gray-500">
+                            {u.folder_name} · {(u.file_size / 1024 / 1024).toFixed(2)} MB
+                          </div>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={async () => {
+                            try {
+                              await openLibraryFile(u.id, u.original_name, u.mime_type);
+                            } catch (e: any) {
+                              toast.error(e?.message || 'Failed to open file');
+                            }
+                          }}
+                        >
+                          Open
+                        </Button>
+                      </div>
+                    ))}
+                    {(!summary?.recent_uploads || summary.recent_uploads.length === 0) && (
+                      <p className="text-sm text-gray-500">No uploads yet.</p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
 
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600 mb-1">Total Orders</p>
-                  <p className="text-2xl">{stats?.total_orders || 0}</p>
-                </div>
-                <ShoppingCart className="h-8 w-8 text-orange-600" />
-              </div>
-            </CardContent>
-          </Card>
+              <Card className="shadow-sm h-[360px] flex flex-col">
+                <CardHeader>
+                  <CardTitle className="text-base">Uploads by type (recent)</CardTitle>
+                </CardHeader>
+                <CardContent className="flex-1">
+                  <ChartContainer
+                    id="uploads-by-type"
+                    className="h-[280px] w-full"
+                    config={{
+                      count: { label: 'Files', color: '#ef4444' },
+                    }}
+                  >
+                    <BarChart data={filesByType}>
+                      <CartesianGrid vertical={false} />
+                      <XAxis dataKey="type" tickLine={false} axisLine={false} />
+                      <ChartTooltip content={<ChartTooltipContent />} />
+                      <Bar dataKey="count" fill="var(--color-count)" radius={[6, 6, 0, 0]} />
+                    </BarChart>
+                  </ChartContainer>
+                </CardContent>
+              </Card>
+            </div>
+            </div>
+          )}
 
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600 mb-1">Total Revenue</p>
-                  <p className="text-2xl">₹{stats?.total_revenue.toFixed(2) || '0.00'}</p>
-                </div>
-                <DollarSign className="h-8 w-8 text-green-600" />
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Tabs */}
-        <Tabs value={tab} onValueChange={(v) => setTab(v as 'users'|'courses'|'analytics'|'payments'|'applications'|'blog')} className="space-y-6">
-          <TabsList>
-            <TabsTrigger value="users">Users</TabsTrigger>
-            <TabsTrigger value="courses">Courses</TabsTrigger>
-            <TabsTrigger value="analytics">Analytics</TabsTrigger>
-            <TabsTrigger value="payments">Payments</TabsTrigger>
-            <TabsTrigger value="applications">Applications</TabsTrigger>
-            <TabsTrigger value="blog">Blog</TabsTrigger>
-          </TabsList>
-
-          {/* Users Tab */}
-          <TabsContent value="users">
+          {activeSection === 'folders' && (
             <Card>
               <CardHeader>
-                <CardTitle>User Management</CardTitle>
-                <CardDescription>
-                  Manage all users on the platform
-                </CardDescription>
+                <CardTitle>Folders</CardTitle>
               </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Email</TableHead>
-                      <TableHead>Role</TableHead>
-                      <TableHead>Joined</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {users.map((u) => (
-                      <TableRow key={u.id}>
-                        <TableCell>
-                          <HoverCard>
-                            <HoverCardTrigger asChild>
-                              <span
-                                className="cursor-help underline decoration-dotted"
-                                onMouseEnter={() => fetchUserSummary(u.id)}
-                              >
-                                {u.name}
-                              </span>
-                            </HoverCardTrigger>
-                            <HoverCardContent>
-                              <div className="space-y-2">
-                                <div className="font-medium">{u.name}</div>
-                                <div className="text-sm text-gray-600">{u.email}</div>
-                                <div className="text-sm">Role: {u.role}</div>
-                                <div className="text-sm">Joined: {new Date(u.created_at).toLocaleDateString()}</div>
-                                {userSummaries[u.id] ? (
-                                  u.role === 'instructor' ? (
-                                    <div className="mt-2 text-sm">
-                                      <div>Courses: {userSummaries[u.id].courses_count}</div>
-                                      <div>Students: {userSummaries[u.id].students_count}</div>
-                                    </div>
-                                  ) : (
-                                    <div className="mt-2 text-sm">
-                                      <div>Enrollments: {userSummaries[u.id].enrollments_count}</div>
-                                      <div>Completed lessons: {userSummaries[u.id].completed_lessons}</div>
-                                    </div>
+              <CardContent className="py-4">
+                <div className="h-[60vh]">
+                  <FolderTreeNav
+                    folders={folders}
+                    selectedId={selectedFolderId}
+                    onSelect={onSelectFolder}
+                    admin
+                    onCreateRoot={onCreateRoot}
+                    onCreateSubfolder={onCreateSubfolder}
+                    onDeleteFolder={onDeleteFolder}
+                  />
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {activeSection === 'upload' && (
+            <Card className="shadow-sm">
+              <CardHeader>
+                <CardTitle>Upload Files</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">Select root folder</label>
+                  <select
+                    value={uploadRootId ?? ''}
+                    onChange={(e) => {
+                      const id = Number(e.target.value);
+                      setUploadRootId(id || null);
+                      setUploadSubfolderValue('');
+                    }}
+                    className="h-10 w-full rounded-md border border-gray-200 bg-white px-3 text-sm"
+                  >
+                    <option value="">Choose root folder</option>
+                    {rootFolders.map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {f.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">Select subfolder (required)</label>
+                  <select
+                    value={uploadSubfolderValue}
+                    onChange={(e) => setUploadSubfolderValue(e.target.value)}
+                    disabled={!uploadRootId}
+                    className="h-10 w-full rounded-md border border-gray-200 bg-white px-3 text-sm disabled:bg-gray-50"
+                  >
+                    <option value="">Auto use "Other"</option>
+                    {uploadSubfolders.map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {f.name}
+                      </option>
+                    ))}
+                    <option value="__other__">Other (auto create/use)</option>
+                  </select>
+                  <p className="text-xs text-gray-500">
+                    Files are uploaded only in subfolders. If no subfolder is selected, it goes to <strong>Other</strong>.
+                  </p>
+                </div>
+
+                <div>
+                  <Input
+                    type="file"
+                    onChange={onUpload}
+                    disabled={uploading || uploadRootId == null}
+                    className="cursor-pointer"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">
+                    Upload directly to selected subfolder. PDF, DOC, DOCX, MP4, AVI, MKV, MOV, WEBM
+                  </p>
+                  {uploading && (
+                    <div className="mt-3 space-y-1">
+                      <div className="flex items-center justify-between text-xs text-gray-600">
+                        <span>Uploading...</span>
+                        <span>{uploadPercent}%</span>
+                      </div>
+                      <Progress value={uploadPercent} />
+                    </div>
+                  )}
+                </div>
+
+                {lastUploadedFile && (
+                  <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 space-y-2">
+                    <div className="text-sm font-medium text-gray-900">Rename uploaded file</div>
+                    <div className="flex gap-2">
+                      <Input
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        placeholder="File name"
+                      />
+                      <Button
+                        disabled={renameSaving || !renameValue.trim()}
+                        onClick={async () => {
+                          try {
+                            setRenameSaving(true);
+                            const res = await apiClient.renameFolderFile(lastUploadedFile.id, renameValue.trim());
+                            setLastUploadedFile(res.file);
+                            await loadData(res.file.folder_id);
+                            toast.success('File name updated');
+                          } catch (e: any) {
+                            toast.error(e?.message || 'Failed to rename file');
+                          } finally {
+                            setRenameSaving(false);
+                          }
+                        }}
+                      >
+                        Save name
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {activeSection === 'users' && (
+            <Card className="shadow-sm">
+              <CardHeader>
+                <CardTitle>Users</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="text-sm text-gray-600">
+                  Inactive users cannot sign in. Folder access shows open libraries and restricted assignments. Delete
+                  removes the account (uploads are reassigned to you).
+                </div>
+                <div className="rounded-lg border border-gray-100 bg-gray-50 p-4 space-y-3">
+                  <div className="text-sm font-medium text-gray-900">Add employee</div>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <Input
+                      placeholder="Full name"
+                      value={newEmployeeName}
+                      onChange={(e) => setNewEmployeeName(e.target.value)}
+                    />
+                    <Input
+                      type="email"
+                      placeholder="Email"
+                      value={newEmployeeEmail}
+                      onChange={(e) => setNewEmployeeEmail(e.target.value)}
+                    />
+                    <Input
+                      type="password"
+                      placeholder="Password (min 8 chars)"
+                      value={newEmployeePassword}
+                      onChange={(e) => setNewEmployeePassword(e.target.value)}
+                    />
+                  </div>
+                  <Button
+                    disabled={creatingEmployee}
+                    onClick={async () => {
+                      const name = newEmployeeName.trim();
+                      const email = newEmployeeEmail.trim();
+                      const password = newEmployeePassword;
+                      if (!name || !email || !password) {
+                        toast.error('Fill name, email, and password');
+                        return;
+                      }
+                      if (password.length < 8) {
+                        toast.error('Password must be at least 8 characters');
+                        return;
+                      }
+                      try {
+                        setCreatingEmployee(true);
+                        await apiClient.createEmployee({ name, email, password });
+                        setNewEmployeeName('');
+                        setNewEmployeeEmail('');
+                        setNewEmployeePassword('');
+                        await loadData(selectedFolderId);
+                        toast.success('Employee saved');
+                      } catch (e: any) {
+                        toast.error(e?.message || 'Failed to create employee');
+                      } finally {
+                        setCreatingEmployee(false);
+                      }
+                    }}
+                  >
+                    Save employee
+                  </Button>
+                </div>
+                <div className="divide-y rounded-lg border border-gray-100 bg-white">
+                  {users.map((u: any) => (
+                    <div key={u.id} className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <div>
+                          <div className="truncate font-medium text-gray-900">
+                            {u.name}{' '}
+                            <span className="text-xs text-gray-500 font-normal">({u.role})</span>
+                          </div>
+                          <div className="text-xs text-gray-500 truncate">{u.email}</div>
+                        </div>
+                        <p className="text-xs leading-relaxed text-gray-600">
+                          {describeUserFolderAccess(u, openFoldersCount)}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-3 sm:flex-col sm:items-end">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-gray-500">Active</span>
+                          <Switch
+                            checked={isUserActive(u)}
+                            disabled={Number(u.id) === Number(user?.id)}
+                            onCheckedChange={async (checked) => {
+                              try {
+                                const res = await apiClient.updateUserStatus(Number(u.id), Boolean(checked));
+                                setUsers((prev: any) =>
+                                  prev.map((x: any) =>
+                                    x.id === u.id
+                                      ? { ...x, ...res.user, restricted_folder_access: x.restricted_folder_access }
+                                      : x
                                   )
-                                ) : (
-                                  <div className="mt-2 text-sm text-gray-500">Loading details…</div>
-                                )}
-                              </div>
-                            </HoverCardContent>
-                          </HoverCard>
-                        </TableCell>
-                        <TableCell>{u.email}</TableCell>
-                        <TableCell>
-                          <Badge
-                            variant={
-                              u.role === 'admin'
-                                ? 'default'
-                                : u.role === 'instructor'
-                                ? 'secondary'
-                                : 'outline'
-                            }
-                          >
-                            {u.role}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          {new Date(u.created_at).toLocaleDateString()}
-                        </TableCell>
-                        <TableCell>
-                          <button
-                            onClick={() => handleDeleteUser(u.id)}
-                            className={`px-3 py-1 rounded text-sm bg-red-600 text-white hover:bg-red-700 flex items-center gap-1 ${deletingUserId === u.id || (user && u.id === user.id) ? 'opacity-60 cursor-not-allowed' : ''}`}
-                            disabled={deletingUserId === u.id || (user && u.id === user.id)}
-                            title="Delete user"
-                          >
-                            <Trash2 className="h-4 w-4" /> Delete
-                          </button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                                );
+                                toast.success('User status updated');
+                              } catch (e: any) {
+                                toast.error(e?.message || 'Failed to update status');
+                              }
+                            }}
+                          />
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                          disabled={Number(u.id) === Number(user?.id)}
+                          onClick={() =>
+                            setPendingUserDelete({ id: Number(u.id), email: String(u.email) })
+                          }
+                        >
+                          <Trash2 className="h-4 w-4 mr-1" />
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </CardContent>
             </Card>
-          </TabsContent>
+          )}
 
-          {/* Courses Tab */}
-          <TabsContent value="courses">
-            <Card>
+          {activeSection === 'logs' && (
+            <Card className="shadow-sm">
               <CardHeader>
-                <CardTitle>Course Management</CardTitle>
-                <CardDescription>
-                  All courses on the platform
-                </CardDescription>
+                <CardTitle>System logs</CardTitle>
+                <p className="text-xs text-gray-500">
+                  Sign-ins, uploads, and admin actions. Files and videos still require a valid session on each request;
+                  hiding URLs from the console is not possible in browsers, but unauthorized requests are rejected by the
+                  server.
+                </p>
               </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Course</TableHead>
-                      <TableHead>Instructor</TableHead>
-                      <TableHead>Category</TableHead>
-                      <TableHead>Price</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Actions</TableHead>
-                      <TableHead>Created</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {courses.map((course) => (
-                      <TableRow key={course.id}>
-                        <TableCell>
-                          <div className="flex items-center gap-3">
-                            {course.thumbnail_url ? (
-                              <img
-                                src={course.thumbnail_url}
-                                alt={course.title}
-                                className="w-16 h-10 object-cover rounded"
-                              />
-                            ) : (
-                              <div className="w-16 h-10 bg-gray-200 rounded flex items-center justify-center">
-                                <BookOpen className="h-4 w-4 text-gray-400" />
-                              </div>
-                            )}
-                            <div>
-                              <div>{course.title}</div>
-                              <div className="text-sm text-gray-500 line-clamp-1">
-                                {course.description}
-                              </div>
-                            </div>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          {course.instructor_name || 'Unknown'}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="secondary">{course.category}</Badge>
-                        </TableCell>
-                        <TableCell>₹{course.price}</TableCell>
-                        <TableCell>
-                          <Badge
-                            variant={
-                              course.status === 'published' ? 'default' : 'outline'
-                            }
-                          >
-                            {course.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <button
-                            onClick={() => handleToggleCourseStatus(course.id, course.status)}
-                            className={`px-3 py-1 rounded text-sm ${
-                              course.status === 'published'
-                                ? 'bg-gray-200 text-gray-800 hover:bg-gray-300'
-                                : 'bg-green-600 text-white hover:bg-green-700'
-                            }`}
-                          >
-                            {course.status === 'published' ? 'Unpublish' : 'Publish'}
-                          </button>
-                        </TableCell>
-                        <TableCell>
-                          {new Date(course.created_at).toLocaleDateString()}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+              <CardContent className="space-y-4">
+                {logsLoading ? (
+                  <p className="text-sm text-gray-600">Loading…</p>
+                ) : (
+                  <div className="max-h-[60vh] overflow-auto rounded-md border border-gray-100">
+                    <table className="w-full text-left text-xs">
+                      <thead className="sticky top-0 bg-gray-50 border-b">
+                        <tr>
+                          <th className="p-2 font-medium">Time</th>
+                          <th className="p-2 font-medium">Level</th>
+                          <th className="p-2 font-medium">Action</th>
+                          <th className="p-2 font-medium">Message</th>
+                          <th className="p-2 font-medium">User</th>
+                          <th className="p-2 font-medium">IP</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {logs.map((row) => (
+                          <tr key={row.id} className="border-b border-gray-50 hover:bg-gray-50/80">
+                            <td className="p-2 whitespace-nowrap text-gray-600">
+                              {row.created_at ? String(row.created_at).replace('T', ' ').slice(0, 19) : '—'}
+                            </td>
+                            <td className="p-2">{row.level}</td>
+                            <td className="p-2 font-mono">{row.action}</td>
+                            <td className="p-2 max-w-xs truncate" title={row.message || ''}>
+                              {row.message || '—'}
+                            </td>
+                            <td className="p-2">{row.user_id ?? '—'}</td>
+                            <td className="p-2 font-mono text-gray-500">{row.ip || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {!logs.length && <p className="p-4 text-sm text-gray-500">No log entries yet.</p>}
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={logsPage <= 1 || logsLoading}
+                    onClick={() => setLogsPage((p) => Math.max(1, p - 1))}
+                  >
+                    Previous
+                  </Button>
+                  <span className="text-xs text-gray-600">
+                    Page {logsPage} · {logsTotal} entries
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={logsLoading || logsPage * ADMIN_LOGS_PAGE_SIZE >= logsTotal}
+                    onClick={() => setLogsPage((p) => p + 1)}
+                  >
+                    Next
+                  </Button>
+                </div>
               </CardContent>
             </Card>
-          </TabsContent>
+          )}
 
-          {/* Analytics Tab */}
-          <TabsContent value="analytics">
-            <div className="grid md:grid-cols-2 gap-6">
-              <Card>
-                <CardHeader>
-                  <CardTitle>User Distribution</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className="w-3 h-3 bg-red-600 rounded"></div>
-                        <span>Students</span>
-                      </div>
-                      <span>
-                        {users.filter((u) => u.role === 'student').length}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className="w-3 h-3 bg-green-600 rounded"></div>
-                        <span>Instructors</span>
-                      </div>
-                      <span>
-                        {users.filter((u) => u.role === 'instructor').length}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className="w-3 h-3 bg-red-500 rounded"></div>
-                        <span>Admins</span>
-                      </div>
-                      <span>
-                        {users.filter((u) => u.role === 'admin').length}
-                      </span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>Course Status</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className="w-3 h-3 bg-green-600 rounded"></div>
-                        <span>Published</span>
-                      </div>
-                      <span>
-                        {courses.filter((c) => c.status === 'published').length}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className="w-3 h-3 bg-gray-600 rounded"></div>
-                        <span>Draft</span>
-                      </div>
-                      <span>
-                        {courses.filter((c) => c.status === 'draft').length}
-                      </span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>Revenue Overview</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <span className="text-gray-600">Total Revenue</span>
-                      <span className="text-2xl">
-                        ₹{stats?.total_revenue.toFixed(2) || '0.00'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-gray-600">Average Order Value</span>
-                      <span className="text-xl">
-                        ₹
-                        {stats && stats.total_orders > 0
-                          ? (stats.total_revenue / stats.total_orders).toFixed(2)
-                          : '0.00'}
-                      </span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>Platform Activity</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <span className="text-gray-600">Total Enrollments</span>
-                      <span className="text-2xl">
-                        {stats?.total_enrollments || 0}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-gray-600">Avg Enrollments/Course</span>
-                      <span className="text-xl">
-                        {stats && stats.total_courses > 0
-                          ? (stats.total_enrollments / stats.total_courses).toFixed(1)
-                          : '0'}
-                      </span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          </TabsContent>
-
-          <TabsContent value="payments">
-            <div className="space-y-6">
-              <AdminPurchaseStream />
-              <AdminPaymentManager />
-            </div>
-          </TabsContent>
-
-          {/* Applications Tab */}
-          <TabsContent value="applications">
+          {activeSection === 'content' && (selectedFolderId == null ? (
             <Card>
-              <CardHeader>
-                <CardTitle>Instructor Applications</CardTitle>
-                <CardDescription>Review and update verification status</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Email</TableHead>
-                      <TableHead>Expertise</TableHead>
-                      <TableHead>Experience</TableHead>
-                      <TableHead>Portfolio</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Submitted</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {applications.map((app) => (
-                      <TableRow key={app.id}>
-                        <TableCell>{app.name}</TableCell>
-                        <TableCell>{app.email}</TableCell>
-                        <TableCell>{app.expertise}</TableCell>
-                        <TableCell>{app.experience_years} yrs</TableCell>
-                        <TableCell>
-                          {app.portfolio_url ? (
-                            <a href={app.portfolio_url} target="_blank" rel="noreferrer" className="text-red-600 hover:underline">Link</a>
-                          ) : (
-                            <span className="text-gray-500">—</span>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={app.status === 'approved' ? 'default' : app.status === 'rejected' ? 'destructive' : app.status === 'verified' ? 'secondary' : 'outline'}>
-                            {app.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>{new Date(app.created_at).toLocaleDateString()}</TableCell>
-                        <TableCell>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => updateApplicationStatus(app.id, 'approved')}
-                              className="px-3 py-1 rounded text-sm bg-green-600 text-white hover:bg-green-700 flex items-center gap-1"
-                            >
-                              <CheckCircle className="h-4 w-4" /> Approve
-                            </button>
-                            <button
-                              onClick={() => updateApplicationStatus(app.id, 'rejected')}
-                              className="px-3 py-1 rounded text-sm bg-red-600 text-white hover:bg-red-700 flex items-center gap-1"
-                            >
-                              <XCircle className="h-4 w-4" /> Reject
-                            </button>
-                            <button
-                              onClick={() => sendVerification(app.id)}
-                              className="px-3 py-1 rounded text-sm bg-red-600 text-white hover:bg-red-700 flex items-center gap-1"
-                            >
-                              <Clock className="h-4 w-4" /> Verify Email
-                            </button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+              <CardContent className="py-12 text-center text-gray-600">
+                Select a folder from the Upload or Folders section to manage content.
               </CardContent>
             </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Job Applications</CardTitle>
-                <CardDescription>Applicants for hiring opportunities</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Email</TableHead>
-                      <TableHead>Role</TableHead>
-                      <TableHead>Resume</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Submitted</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {jobApplications.map((app) => (
-                      <TableRow key={app.id}>
-                        <TableCell>{app.name}</TableCell>
-                        <TableCell>{app.email}</TableCell>
-                        <TableCell>{app.role_applied}</TableCell>
-                        <TableCell>
-                          <a href={app.resume_url} target="_blank" rel="noreferrer" className="text-red-600 hover:underline">Resume</a>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={app.status === 'approved' ? 'default' : app.status === 'rejected' ? 'destructive' : 'outline'}>
-                            {app.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>{new Date(app.created_at).toLocaleDateString()}</TableCell>
-                        <TableCell>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => updateJobApplicationStatus(app.id, 'approved')}
-                              className="px-3 py-1 rounded text-sm bg-green-600 text-white hover:bg-green-700 flex items-center gap-1"
-                            >
-                              <CheckCircle className="h-4 w-4" /> Approve
-                            </button>
-                            <button
-                              onClick={() => updateJobApplicationStatus(app.id, 'rejected')}
-                              className="px-3 py-1 rounded text-sm bg-red-600 text-white hover:bg-red-700 flex items-center gap-1"
-                            >
-                              <XCircle className="h-4 w-4" /> Reject
-                            </button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* Blog Tab */}
-          <TabsContent value="blog">
-            <div className="grid md:grid-cols-3 gap-6">
-              <Card className="md:col-span-1">
-                <CardHeader>
-                  <CardTitle>Create Blog Post</CardTitle>
-                  <CardDescription>Only Admins and Instructors can create</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <form onSubmit={handleCreateBlog} className="space-y-4">
-                    <div>
-                      <Label htmlFor="blog-title">Title *</Label>
-                      <Input id="blog-title" value={blogTitle} onChange={(e) => setBlogTitle(e.target.value)} required />
-                    </div>
-                    <div>
-                      <Label htmlFor="blog-category">Category *</Label>
-                      <Input id="blog-category" value={blogCategory} onChange={(e) => setBlogCategory(e.target.value)} placeholder="e.g., AI, Cloud" required />
-                    </div>
-                    <div>
-                      <Label htmlFor="blog-status">Status *</Label>
-                      <Select value={blogStatus} onValueChange={(v) => setBlogStatus(v as 'draft'|'published')}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select status" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="draft">Draft</SelectItem>
-                          <SelectItem value="published">Published</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div>
-                      <Label htmlFor="blog-content">Content</Label>
-                      <Textarea id="blog-content" value={blogContent} onChange={(e) => setBlogContent(e.target.value)} rows={4} placeholder="Optional brief content" />
-                    </div>
-                    <div>
-                      <Label htmlFor="blog-image">Featured Image</Label>
-                      <Input id="blog-image" type="file" accept="image/*" onChange={(e) => setBlogImageFile((e.target as HTMLInputElement).files?.[0] || null)} />
-                      {blogImageFile && <p className="text-xs text-gray-600 mt-2">Selected: {blogImageFile.name}</p>}
-                    </div>
-                    <Button type="submit" className="w-full">Create</Button>
-                  </form>
-                </CardContent>
-              </Card>
-              <Card className="md:col-span-2">
-                <CardHeader>
-                  <CardTitle>All Blog Posts</CardTitle>
-                  <CardDescription>Manage visibility and content</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Title</TableHead>
-                        <TableHead>Author</TableHead>
-                        <TableHead>Category</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Image</TableHead>
-                        <TableHead>Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {blogs.map((b) => (
-                        <TableRow key={b.id}>
-                          <TableCell>{b.title}</TableCell>
-                          <TableCell>{b.author_name || 'Unknown'}</TableCell>
-                          <TableCell><Badge variant="secondary">{b.category}</Badge></TableCell>
-                          <TableCell>
-                            <Badge variant={b.status === 'published' ? 'default' : 'outline'}>{b.status}</Badge>
-                          </TableCell>
-                          <TableCell>
-                            {b.featured_image_url ? (
-                              <img src={b.featured_image_url} alt={b.title} className="w-16 h-10 object-cover rounded" />
-                            ) : (
-                              <div className="w-16 h-10 bg-gray-200 rounded flex items-center justify-center">
-                                <ImageIcon className="h-4 w-4 text-gray-400" />
-                              </div>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => handleToggleBlogStatus(b.id, b.status)}
-                                className={`px-3 py-1 rounded text-sm ${b.status === 'published' ? 'bg-gray-200 text-gray-800 hover:bg-gray-300' : 'bg-green-600 text-white hover:bg-green-700'}`}
-                              >
-                                {b.status === 'published' ? 'Unpublish' : 'Publish'}
-                              </button>
-                              <button
-                                onClick={() => handleDeleteBlog(b.id)}
-                                className="px-3 py-1 rounded text-sm bg-red-600 text-white hover:bg-red-700 flex items-center gap-1"
-                                title="Delete blog"
-                              >
-                                <Trash2 className="h-4 w-4" /> Delete
-                              </button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
+          ) : (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant={contentFilter === 'all' ? 'default' : 'outline'}
+                  onClick={() => setContentFilter('all')}
+                >
+                  All
+                </Button>
+                <Button
+                  size="sm"
+                  variant={contentFilter === 'folder' ? 'default' : 'outline'}
+                  onClick={() => setContentFilter('folder')}
+                >
+                  By folder
+                </Button>
+                {contentFilter === 'folder' && (
+                  <div className="max-w-sm w-full">
+                    <select
+                      value={selectedFolderId ?? ''}
+                      onChange={(e) => {
+                        const id = Number(e.target.value);
+                        if (id) onSelectFolder(id);
+                      }}
+                      className="h-10 w-full rounded-md border border-gray-200 bg-white px-3 text-sm"
+                    >
+                      {folders.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {folderFullPath(folders, f.id)}
+                        </option>
                       ))}
-                    </TableBody>
-                  </Table>
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1 text-sm text-gray-600">
+                {breadcrumb.map((seg, i) => (
+                  <React.Fragment key={seg.id}>
+                    {i > 0 && <ChevronRight className="h-4 w-4 shrink-0 text-gray-400" />}
+                    <button
+                      type="button"
+                      className={`rounded px-1 hover:text-red-700 ${i === breadcrumb.length - 1 ? 'font-semibold text-gray-900' : ''}`}
+                      onClick={() => onSelectFolder(seg.id)}
+                    >
+                      {seg.name}
+                    </button>
+                  </React.Fragment>
+                ))}
+              </div>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <FileText className="h-5 w-5 text-red-600" />
+                    Files in “{breadcrumb[breadcrumb.length - 1]?.name ?? 'folder'}”
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex flex-col gap-3 rounded-lg border border-gray-100 bg-white p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 text-sm text-gray-700">
+                        <Shield className="h-4 w-4 text-gray-500" />
+                        <span className="font-medium">Visibility</span>
+                        <span className="text-xs text-gray-500">
+                          {String(selectedFolder?.visibility || 'all') === 'restricted'
+                            ? `Restricted — ${assignedEmployeeCount ?? '…'} employee(s) assigned`
+                            : 'Visible to all employees (or assign specific people below)'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-500">Restricted</span>
+                        <Switch
+                          checked={String(selectedFolder?.visibility || 'all') === 'restricted'}
+                          onCheckedChange={async (checked) => {
+                            if (!selectedFolderId) return;
+                            try {
+                              const res = await apiClient.updateFolder(selectedFolderId, {
+                                visibility: checked ? 'restricted' : 'all',
+                              });
+                              setFolders((prev) =>
+                                prev.map((f) => (f.id === selectedFolderId ? { ...f, ...res.folder } : f))
+                              );
+                              if (checked) await refreshAssignedCount();
+                              else setAssignedEmployeeCount(null);
+                              toast.success('Folder visibility updated');
+                            } catch (e: any) {
+                              toast.error(e?.message || 'Failed to update visibility');
+                            }
+                          }}
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={async () => {
+                            if (!selectedFolderId) return;
+                            setAccessOpen(true);
+                            setAccessLoading(true);
+                            try {
+                              const res = await apiClient.getFolderAccess(selectedFolderId);
+                              setAccessUserIds(res.user_ids || []);
+                            } catch (e: any) {
+                              toast.error(e?.message || 'Failed to load access list');
+                            } finally {
+                              setAccessLoading(false);
+                            }
+                          }}
+                        >
+                          Assign employees
+                        </Button>
+                      </div>
+                    </div>
+                    {String(selectedFolder?.visibility || 'all') === 'restricted' && (
+                      <>
+                        <div className="text-xs text-gray-500">
+                          Tip: Restrict a parent folder (e.g. “Cisco”) so access rules apply to its subfolders too.
+                        </div>
+                        <div className="text-xs text-gray-800">
+                          <span className="font-medium">Assigned employees:</span>{' '}
+                          {assignedNames.length
+                            ? assignedNames.join(', ')
+                            : 'None — use Assign employees'}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {contentFilter === 'all' && allFilesLoading && (
+                    <p className="text-sm text-gray-500">Loading all files…</p>
+                  )}
+                  <ul className="divide-y divide-gray-100 rounded-lg border border-gray-100">
+                    {(contentFilter === 'all' ? allFiles : files).map((f: any) => (
+                      <li
+                        key={f.id}
+                        className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-gray-50/80"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate font-medium text-gray-900">{f.original_name}</p>
+                          <p className="text-xs text-gray-500">
+                            {(f.file_size / 1024 / 1024).toFixed(2)} MB · {f.mime_type}
+                            {contentFilter === 'all' ? ` · ${f.folder_name}` : ''}
+                          </p>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={async () => {
+                            try {
+                              await openLibraryFile(f.id, f.original_name, f.mime_type);
+                            } catch (err: any) {
+                              toast.error(err?.message || 'Failed to open file');
+                            }
+                          }}
+                        >
+                          {f.mime_type.startsWith('video/') ? 'Play' : 'Download'}
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                  {!(contentFilter === 'all' ? allFiles.length : files.length) && !allFilesLoading && (
+                    <p className="py-8 text-center text-sm text-gray-500">No files in this folder yet.</p>
+                  )}
                 </CardContent>
               </Card>
-            </div>
-          </TabsContent>
+            </>
+          ))}
 
-        </Tabs>
+          <Dialog open={accessOpen} onOpenChange={setAccessOpen}>
+            <DialogContent className="sm:max-w-xl">
+              <DialogHeader>
+                <DialogTitle>Folder access (employees)</DialogTitle>
+                <DialogDescription>
+                  Choose which employees can open this folder. Only applies when the folder is restricted.
+                </DialogDescription>
+              </DialogHeader>
+              {accessLoading ? (
+                <div className="text-sm text-gray-600">Loading…</div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="text-sm text-gray-600">
+                    {String(selectedFolder?.visibility || 'all') === 'restricted' ? (
+                      <>Choose which employees can open this folder and its files.</>
+                    ) : (
+                      <>
+                        Choose employees to allow. Saving will set this folder to <strong>Restricted</strong> so only
+                        selected people can see it.
+                      </>
+                    )}
+                  </div>
+                  <div className="max-h-72 overflow-auto rounded-md border border-gray-100">
+                    {employees.map((e: any) => {
+                      const checked = accessUserIds.includes(e.id);
+                      return (
+                        <label
+                          key={e.id}
+                          className="flex items-center gap-3 px-4 py-2 hover:bg-gray-50 cursor-pointer"
+                        >
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={(v) => {
+                              const next = Boolean(v);
+                              setAccessUserIds((prev) =>
+                                next ? [...new Set([...prev, e.id])] : prev.filter((x) => x !== e.id)
+                              );
+                            }}
+                          />
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium text-gray-900 truncate">{e.name}</div>
+                            <div className="text-xs text-gray-500 truncate">{e.email}</div>
+                          </div>
+                        </label>
+                      );
+                    })}
+                    {employees.length === 0 && (
+                      <div className="px-4 py-3 text-sm text-gray-600">No employees found.</div>
+                    )}
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" onClick={() => setAccessOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button
+                      onClick={async () => {
+                        if (!selectedFolderId) return;
+                        try {
+                          if (accessUserIds.length > 0) {
+                            const resVis = await apiClient.updateFolder(selectedFolderId, {
+                              visibility: 'restricted',
+                            });
+                            setFolders((prev) =>
+                              prev.map((f) => (f.id === selectedFolderId ? { ...f, ...resVis.folder } : f))
+                            );
+                          }
+                          await apiClient.setFolderAccess(selectedFolderId, accessUserIds);
+                          await refreshAssignedCount();
+                          toast.success('Access list saved');
+                          setAccessOpen(false);
+                        } catch (e: any) {
+                          toast.error(e?.message || 'Failed to save access list');
+                        }
+                      }}
+                    >
+                      Save
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </DialogContent>
+          </Dialog>
+        </main>
+
+        <ConfirmDestructiveDialog
+          open={pendingFolderDeleteId !== null}
+          onOpenChange={(o) => {
+            if (!o) setPendingFolderDeleteId(null);
+          }}
+          title="Delete folder?"
+          description="This removes the folder, all subfolders, and every file inside. This cannot be undone."
+          confirmLabel="Delete folder"
+          onConfirm={async () => {
+            if (pendingFolderDeleteId == null) return;
+            const folderId = pendingFolderDeleteId;
+            try {
+              await apiClient.deleteFolder(folderId);
+              await loadData(null);
+              toast.success('Folder removed');
+            } catch (e: any) {
+              toast.error(e?.message || 'Failed to delete folder');
+            }
+          }}
+        />
+        <ConfirmDestructiveDialog
+          open={pendingUserDelete !== null}
+          onOpenChange={(o) => {
+            if (!o) setPendingUserDelete(null);
+          }}
+          title="Delete user?"
+          description={
+            pendingUserDelete
+              ? `Delete ${pendingUserDelete.email}? This cannot be undone.`
+              : ''
+          }
+          confirmLabel="Delete user"
+          onConfirm={async () => {
+            if (!pendingUserDelete) return;
+            try {
+              await apiClient.deleteUser(pendingUserDelete.id);
+              setUsers((prev) => prev.filter((x) => x.id !== pendingUserDelete.id));
+              toast.success('User deleted');
+            } catch (e: any) {
+              toast.error(e?.message || 'Failed to delete user');
+            }
+          }}
+        />
       </div>
     </div>
   );

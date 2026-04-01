@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { LogIn, Mail, Lock, AlertCircle } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { LogIn, Mail, Lock, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { apiClient } from '../utils/api';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -12,25 +11,11 @@ import { Alert, AlertDescription } from '../components/ui/alert';
 export function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
-  const [showResend, setShowResend] = useState(false);
-  const [resending, setResending] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const { signIn, user, refreshProfile, loading } = useAuth();
+  const { signIn, user, loading } = useAuth();
   const navigate = useNavigate();
-
-  const handleResend = async () => {
-    try {
-      setResending(true);
-      setShowResend(false);
-      await apiClient.resendVerification(email);
-      setError('Verification email sent. Please check your inbox.');
-    } catch (e: any) {
-      setError(e?.message || 'Failed to send verification email');
-    } finally {
-      setResending(false);
-    }
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,16 +23,10 @@ export function LoginPage() {
     setSubmitting(true);
 
     try {
-      await signIn(email, password);
-      // Ensure we have the latest profile
-      await refreshProfile();
-      const role = user?.role;
-      if (role === 'admin') {
+      const u = await signIn(email, password);
+      if (u.role === 'admin') {
         navigate('/admin');
-      } else if (role === 'instructor') {
-        navigate('/instructor');
       } else {
-        // Default student view
         navigate('/profile');
       }
     } catch (err: any) {
@@ -55,10 +34,7 @@ export function LoginPage() {
       
       // Better error message
       if (err.message?.includes('Invalid login credentials')) {
-        setError('Invalid email or password. Please check your credentials or sign up for a new account.');
-      } else if (err.code === 'EMAIL_NOT_VERIFIED' || err.message?.includes('Email not verified')) {
-        setError('Please verify your email address before signing in.');
-        setShowResend(true);
+        setError('Invalid email or password. Please check your credentials.');
       } else {
         setError(err.message || 'Failed to sign in. Please try again.');
       }
@@ -67,12 +43,11 @@ export function LoginPage() {
     }
   };
 
-  // If already signed in (JWT in localStorage and user loaded), redirect away from login
+  // If already signed in (session cookie + profile loaded), redirect away from login
   useEffect(() => {
     if (!loading && user) {
       const role = user.role;
       if (role === 'admin') navigate('/admin');
-      else if (role === 'instructor') navigate('/instructor');
       else navigate('/profile');
     }
   }, [loading, user]);
@@ -103,13 +78,6 @@ export function LoginPage() {
                 <AlertCircle className="h-4 w-4" />
                 <AlertDescription>
                   {error}
-                  {showResend && (
-                    <div className="mt-3">
-                      <Button type="button" size="sm" onClick={handleResend} disabled={resending}>
-                        {resending ? 'Sending…' : 'Resend verification email'}
-                      </Button>
-                    </div>
-                  )}
                 </AlertDescription>
               </Alert>
             )}
@@ -138,14 +106,23 @@ export function LoginPage() {
                   <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
                   <Input
                     id="password"
-                    type="password"
+                    type={showPassword ? 'text' : 'password'}
                     required
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="pl-10"
+                    className="pl-10 pr-12"
                     placeholder="••••••••"
                     autoComplete="current-password"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((current) => !current)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 transition hover:text-gray-600"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showPassword}
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
                 </div>
               </div>
 
@@ -168,38 +145,6 @@ export function LoginPage() {
                 </Button>
               </div>
             </form>
-
-            <div className="mt-6 text-center">
-              <p className="text-sm text-gray-600">
-                Don't have an account?{' '}
-                <Link to="/register" className="text-red-600 hover:text-red-700 hover:underline">
-                  Sign up
-                </Link>
-              </p>
-            </div>
-
-            {/* Quick Start Guide */}
-            <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-sm mb-3">
-                <strong>🚀 First time here?</strong>
-              </p>
-              <div className="text-sm text-gray-700 space-y-2">
-                <p>
-                  1. Click "Sign up" above to create an account
-                </p>
-                <p>
-                  2. Choose your role (Student, Instructor, or Admin)
-                </p>
-                <p>
-                  3. Start learning or creating courses!
-                </p>
-              </div>
-              <div className="mt-4 pt-4 border-t border-red-200">
-                <p className="text-xs text-red-700 mb-2">
-                  <strong>💡 Pro tip:</strong> Register as an instructor to create and sell courses
-                </p>
-              </div>
-            </div>
           </CardContent>
         </Card>
       </div>

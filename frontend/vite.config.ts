@@ -2,8 +2,9 @@
   import { defineConfig } from 'vite';
   import react from '@vitejs/plugin-react-swc';
   import tailwindcss from '@tailwindcss/vite'
-  // import tailwindcss from '@tailwindcss/vite'
   import path from 'path';
+
+  const proxyTarget = process.env.VITE_PROXY_TARGET || 'http://localhost:8080';
 
   export default defineConfig({
     plugins: [react(), tailwindcss()],
@@ -19,11 +20,12 @@
     },
     server: {
       host: true,
-      port: 3000,
+      port: 4000,
+      strictPort: true,
       open: true,
       proxy: {
         '/api': {
-          target: 'http://localhost:5000',
+          target: proxyTarget,
           changeOrigin: true,
         },
       },

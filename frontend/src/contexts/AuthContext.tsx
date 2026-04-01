@@ -6,7 +6,7 @@ interface AuthContextType {
   user: User | null;
   session: any;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
+  signIn: (email: string, password: string) => Promise<User>;
   signUp: (email: string, password: string, name: string, role?: string) => Promise<string>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
@@ -19,80 +19,60 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
-  const isTokenExpired = (token: string) => {
+  const fetchUserProfile = async () => {
     try {
-      const payload = JSON.parse(atob(token.split('.')[1]));
-      // exp is in seconds; Date.now() is ms
-      return typeof payload.exp === 'number' && payload.exp * 1000 < Date.now();
-    } catch {
-      return true;
-    }
-  };
-
-  const fetchUserProfile = async (accessToken: string) => {
-    try {
-      apiClient.setAccessToken(accessToken);
       const { profile } = await apiClient.getProfile();
       setUser(profile);
-    } catch (error) {
-      console.error('Error fetching user profile:', error);
+      setSession({ authenticated: true });
+    } catch {
       setUser(null);
+      setSession(null);
     }
   };
 
   const refreshProfile = async () => {
-    if (session?.access_token) {
-      await fetchUserProfile(session.access_token);
-    }
+    await fetchUserProfile();
   };
 
   useEffect(() => {
-    const token = localStorage.getItem('auth_token');
-    if (token && !isTokenExpired(token)) {
-      const sess = { access_token: token };
-      setSession(sess);
-      apiClient.setAccessToken(token);
-      fetchUserProfile(token).finally(() => setLoading(false));
-    } else {
-      if (token && isTokenExpired(token)) {
-        localStorage.removeItem('auth_token');
-      }
-      setLoading(false);
-    }
+    fetchUserProfile().finally(() => setLoading(false));
   }, []);
 
-  const signUp = async (email: string, password: string, name: string, role: string = 'student') => {
+  const signUp = async (email: string, password: string, name: string, role: string = 'employee') => {
     try {
       const { message } = await apiClient.register(email, password, name, role);
-      // Do not auto-login; require email verification
-      return message || 'Account created. Check your email to verify.';
+      return message || 'Account created.';
     } catch (error: any) {
       console.error('Sign up error:', error);
       throw error;
     }
   };
 
-  const signIn = async (email: string, password: string) => {
+  const signIn = async (email: string, password: string): Promise<User> => {
+    const { user: loginUser } = await apiClient.login(email, password);
+    apiClient.setAccessToken(null);
     try {
-      const { user, token } = await apiClient.login(email, password);
-      localStorage.setItem('auth_token', token);
-      setSession({ access_token: token });
-      await fetchUserProfile(token);
-    } catch (error: any) {
-      console.error('Sign in error:', error);
-      throw error;
+      const { profile } = await apiClient.getProfile();
+      setUser(profile as User);
+      setSession({ authenticated: true });
+      return profile as User;
+    } catch (e) {
+      console.error('Sign in error:', e);
+      setUser(loginUser as User);
+      setSession({ authenticated: true });
+      throw new Error(
+        'Signed in, but the session cookie was not accepted (Unauthorized). Restart the Vite dev server and backend, and confirm JWT_SECRET is set in backend/.env.'
+      );
     }
   };
 
   const signOut = async () => {
     try {
-      localStorage.removeItem('auth_token');
+      await apiClient.logout().catch(() => {});
+    } finally {
       setUser(null);
       setSession(null);
       apiClient.setAccessToken(null);
-    } catch (error: any) {
-      console.error('Sign out error:', error);
-      throw error;
     }
   };
 

@@ -1,69 +1,90 @@
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
-import razorpayRouter from './razorpayRoutes.js';
-import authRouter from './authRoutes.js';
-import uploadRouter from './uploadRoutes.js';
-import coursesRouter from './coursesRoutes.js';
-import enrollmentsRouter from './enrollmentsRoutes.js';
-import progressRouter from './progressRoutes.js';
-import adminRouter from './adminRoutes.js';
-import usersRouter from './usersRoutes.js';
-import applicationsRouter from './applicationsRoutes.js';
-import configRouter from './configRoutes.js';
-import webhookRouter from './webhookRoutes.js';
-import adminPaymentRouter from './adminPaymentRoutes.js';
-import contactRouter from './contactRoutes.js';
-import blogsRouter from './blogsRoutes.js';
+import helmet from 'helmet';
+import authRouter from './routes/authRoutes.js';
+import adminRouter from './routes/adminRoutes.js';
+import usersRouter from './routes/usersRoutes.js';
+import libraryRouter from './routes/libraryRoutes.js';
+import { API_MOUNTS } from './config/apiMounts.js';
 import { initDb } from './db.js';
-import path from 'path';
 import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import { setIO } from './realtime.js';
+import { apiLimiter, isLocalInitRequest } from './security.js';
 
 dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 8080;
 
 const corsOptions = {
   origin:
     process.env.NODE_ENV === 'production'
       ? process.env.FRONTEND_URL
-      : ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002', 'http://192.168.0.20:3000'],
+      : [
+          'http://localhost:4000',
+          'http://127.0.0.1:4000',
+          'http://localhost:4001',
+          'http://127.0.0.1:4001',
+          'http://localhost:5173',
+          'http://127.0.0.1:5173',
+          'http://localhost:3000',
+          'http://localhost:3001',
+          'http://localhost:3002',
+          'http://192.168.0.20:3000',
+        ],
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   optionsSuccessStatus: 200,
 };
 app.use(cors(corsOptions));
 // Ensure Express responds to preflight requests
-app.options('*', cors());
-app.use(express.json());
-app.use('/uploads', express.static(path.resolve('server', 'uploads')));
+app.options('*', cors(corsOptions));
+app.use(cookieParser());
+app.use(express.json({ limit: '2mb' }));
+app.use(
+  helmet({
+    crossOriginResourcePolicy: false,
+    contentSecurityPolicy: false,
+  })
+);
+app.use('/api', apiLimiter);
+
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+    );
+  }
+  next();
+});
 
 app.get('/health', (req, res) => {
   res.json({ ok: true });
 });
 
-app.use('/api/razorpay', razorpayRouter);
-app.use('/api/auth', authRouter);
-app.use('/api/media', uploadRouter);
-app.use('/api/courses', coursesRouter);
-app.use('/api/enrollments', enrollmentsRouter);
-app.use('/api/progress', progressRouter);
-app.use('/api/admin', adminRouter);
-app.use('/api/admin', adminPaymentRouter);
-app.use('/api/users', usersRouter);
-app.use('/api/applications', applicationsRouter);
-app.use('/api/config', configRouter);
-app.use('/api/webhook', webhookRouter);
-app.use('/api/contact', contactRouter);
-app.use('/api/blogs', blogsRouter);
+app.use(API_MOUNTS.AUTH, authRouter);
+app.use(API_MOUNTS.ADMIN, adminRouter);
+app.use(API_MOUNTS.USERS, usersRouter);
+app.use(API_MOUNTS.LIBRARY, libraryRouter);
 
-// Initialize DB on demand
+// Initialize DB on demand for local development only
 app.post('/api/init-db', async (_req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  if (!isLocalInitRequest(_req)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
   try {
     await initDb();
     res.json({ message: 'Database initialized' });
@@ -78,7 +99,15 @@ const io = new SocketIOServer(server, {
     origin:
       process.env.NODE_ENV === 'production'
         ? process.env.FRONTEND_URL
-        : ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002', '*', 'http://192.168.0.20:3000'],
+        : [
+            'http://localhost:4000',
+            'http://localhost:4001',
+            'http://localhost:5173',
+            'http://localhost:3000',
+            'http://localhost:3001',
+            'http://localhost:3002',
+            'http://192.168.0.20:3000',
+          ],
     credentials: true,
   },
 });
@@ -89,5 +118,5 @@ io.on('connection', (socket) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Razorpay card-only server running on http://localhost:${PORT}`);
+  console.log(`Internal training server running on http://localhost:${PORT}`);
 });
