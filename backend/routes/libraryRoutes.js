@@ -11,6 +11,7 @@ import {
   folderAccessSchema,
   folderVisibilitySchema,
   parseOrThrow,
+  videoProgressUpdateSchema,
 } from '../validation.js';
 
 const router = express.Router();
@@ -93,10 +94,18 @@ const allowedExtensionsByMime = {
 };
 
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 1024 * 1024 * 250, // 250MB
-  },
+  storage: multer.diskStorage({
+    destination: (req, _file, cb) => {
+      const dest = req.libraryUploadDest || storageRoot;
+      cb(null, dest);
+    },
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname || '').toLowerCase();
+      const safeBase = sanitizeBaseName(file.originalname);
+      const slug = req.libraryFolderSlug || 'upload';
+      cb(null, `${slug}__${Date.now()}__${safeBase}${ext}`);
+    },
+  }),
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname || '').toLowerCase();
     const allowedExts = allowedExtensionsByMime[file.mimetype] || [];
@@ -104,6 +113,25 @@ const upload = multer({
     return cb(new Error('Unsupported file type. Allowed: PDF, DOC, DOCX, and video files.'));
   },
 });
+
+async function prepareLibraryUpload(req, res, next) {
+  try {
+    await initDb();
+    const folderId = Number(req.params.folderId);
+    if (!folderId) return res.status(400).json({ error: 'Invalid folder id' });
+    const folders = await query('SELECT id, slug FROM content_folders WHERE id = ?', [folderId]);
+    if (!folders.length) return res.status(404).json({ error: 'Folder not found' });
+    const folder = folders[0];
+    const folderPath = path.join(storageRoot, folder.slug);
+    fs.mkdirSync(folderPath, { recursive: true });
+    req.libraryUploadDest = folderPath;
+    req.libraryFolderSlug = folder.slug;
+    next();
+  } catch (err) {
+    console.error('prepareLibraryUpload', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
 
 async function getSubtreeFolderIds(rootId) {
   const ids = [rootId];
@@ -118,6 +146,29 @@ async function getSubtreeFolderIds(rootId) {
     ids.push(...frontier);
   }
   return ids;
+}
+
+async function getFileRow(fileId) {
+  const rows = await query(
+    `SELECT ff.id, ff.folder_id, ff.original_name, ff.stored_name, ff.mime_type, ff.file_size, ff.uploaded_by, ff.created_at,
+            cf.name AS folder_name
+     FROM folder_files ff
+     JOIN content_folders cf ON cf.id = ff.folder_id
+     WHERE ff.id = ?`,
+    [fileId]
+  );
+  return rows[0] || null;
+}
+
+async function getProgressRow(userId, fileId) {
+  const rows = await query(
+    `SELECT user_id, file_id, watched_seconds, duration_seconds, max_percent, completed, completed_at,
+            last_position_seconds, updated_at
+     FROM video_progress
+     WHERE user_id = ? AND file_id = ?`,
+    [userId, fileId]
+  );
+  return rows[0] || null;
 }
 
 router.post('/folders', authMiddleware, requireAdmin, async (req, res) => {
@@ -207,64 +258,69 @@ router.get('/folders', authMiddleware, async (req, res) => {
   }
 });
 
-router.post('/folders/:folderId/files', authMiddleware, requireAdmin, upload.single('file'), async (req, res) => {
-  try {
-    await initDb();
-    const folderId = Number(req.params.folderId);
-    if (!folderId) return res.status(400).json({ error: 'Invalid folder id' });
+router.post(
+  '/folders/:folderId/files',
+  authMiddleware,
+  requireAdmin,
+  prepareLibraryUpload,
+  upload.single('file'),
+  async (req, res) => {
+    const uploadedPath = req.file?.path;
+    try {
+      await initDb();
+      const folderId = Number(req.params.folderId);
+      if (!folderId) return res.status(400).json({ error: 'Invalid folder id' });
 
-    const file = req.file;
-    if (!file) return res.status(400).json({ error: 'No file uploaded' });
+      const file = req.file;
+      if (!file) return res.status(400).json({ error: 'No file uploaded' });
 
-    const folders = await query('SELECT id, slug FROM content_folders WHERE id = ?', [folderId]);
-    if (!folders.length) return res.status(404).json({ error: 'Folder not found' });
-    const folder = folders[0];
-
-    const ext = path.extname(file.originalname || '').toLowerCase();
-    const safeBase = sanitizeBaseName(file.originalname);
-    const storedName = `${folder.slug}__${Date.now()}__${safeBase}${ext}`;
-    const folderPath = path.join(storageRoot, folder.slug);
-    fs.mkdirSync(folderPath, { recursive: true });
-    const absolutePath = path.join(folderPath, storedName);
-    fs.writeFileSync(absolutePath, file.buffer);
-
-    const relativePath = path.relative(path.resolve('storage'), absolutePath).replace(/\\/g, '/');
-    const result = await query(
-      `INSERT INTO folder_files
+      const storedName = file.filename;
+      const absolutePath = file.path;
+      const relativePath = path.relative(path.resolve('storage'), absolutePath).replace(/\\/g, '/');
+      const result = await query(
+        `INSERT INTO folder_files
       (folder_id, original_name, stored_name, relative_path, mime_type, file_size, uploaded_by)
       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [folderId, file.originalname, storedName, relativePath, file.mimetype, file.size, req.user.id]
-    );
+        [folderId, file.originalname, storedName, relativePath, file.mimetype, file.size, req.user.id]
+      );
 
-    await logEvent({
-      action: 'library_upload',
-      message: String(file.originalname || 'file').slice(0, 200),
-      userId: req.user.id,
-      req,
-      meta: { folder_id: folderId, file_id: result.insertId },
-    });
+      await logEvent({
+        action: 'library_upload',
+        message: String(file.originalname || 'file').slice(0, 200),
+        userId: req.user.id,
+        req,
+        meta: { folder_id: folderId, file_id: result.insertId },
+      });
 
-    return res.status(201).json({
-      file: {
-        id: result.insertId,
-        folder_id: folderId,
-        original_name: file.originalname,
-        stored_name: storedName,
-        mime_type: file.mimetype,
-        file_size: file.size,
-      },
-    });
-  } catch (err) {
-    console.error('Upload file error', err);
-    if (err instanceof multer.MulterError) {
-      return res.status(400).json({ error: 'Upload rejected. Check file size and file type.' });
+      return res.status(201).json({
+        file: {
+          id: result.insertId,
+          folder_id: folderId,
+          original_name: file.originalname,
+          stored_name: storedName,
+          mime_type: file.mimetype,
+          file_size: file.size,
+        },
+      });
+    } catch (err) {
+      if (uploadedPath) {
+        try {
+          fs.unlinkSync(uploadedPath);
+        } catch (_) {
+          /* ignore */
+        }
+      }
+      console.error('Upload file error', err);
+      if (err instanceof multer.MulterError) {
+        return res.status(400).json({ error: 'Upload rejected. Check file size and file type.' });
+      }
+      if (err?.message === 'Unsupported file type. Allowed: PDF, DOC, DOCX, and video files.') {
+        return res.status(400).json({ error: err.message });
+      }
+      return res.status(500).json({ error: 'Server error' });
     }
-    if (err?.message === 'Unsupported file type. Allowed: PDF, DOC, DOCX, and video files.') {
-      return res.status(400).json({ error: err.message });
-    }
-    return res.status(500).json({ error: 'Server error' });
   }
-});
+);
 
 router.get('/folders/:folderId/files', authMiddleware, async (req, res) => {
   try {
@@ -285,6 +341,148 @@ router.get('/folders/:folderId/files', authMiddleware, async (req, res) => {
     return res.json({ files });
   } catch (err) {
     console.error('List files error', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.get('/folders/:folderId/progress', authMiddleware, async (req, res) => {
+  try {
+    await initDb();
+    const folderId = Number(req.params.folderId);
+    if (!folderId) return res.status(400).json({ error: 'Invalid folder id' });
+    if (!(await canAccessFolder(req.user, folderId))) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const rows = await query(
+      `SELECT ff.id AS file_id,
+              COALESCE(vp.watched_seconds, 0) AS watched_seconds,
+              COALESCE(vp.duration_seconds, 0) AS duration_seconds,
+              COALESCE(vp.max_percent, 0) AS max_percent,
+              COALESCE(vp.completed, 0) AS completed,
+              vp.completed_at,
+              COALESCE(vp.last_position_seconds, 0) AS last_position_seconds,
+              vp.updated_at
+       FROM folder_files ff
+       LEFT JOIN video_progress vp
+         ON vp.file_id = ff.id AND vp.user_id = ?
+       WHERE ff.folder_id = ? AND ff.mime_type LIKE 'video/%'`,
+      [req.user.id, folderId]
+    );
+    return res.json({ progress: rows });
+  } catch (err) {
+    console.error('Folder progress error', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.get('/files/:fileId/progress', authMiddleware, async (req, res) => {
+  try {
+    await initDb();
+    const fileId = Number(req.params.fileId);
+    if (!fileId) return res.status(400).json({ error: 'Invalid file id' });
+    const file = await getFileRow(fileId);
+    if (!file) return res.status(404).json({ error: 'File not found' });
+    if (!String(file.mime_type || '').startsWith('video/')) {
+      return res.status(400).json({ error: 'Progress is available only for video files' });
+    }
+    if (!(await canAccessFolder(req.user, file.folder_id))) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    const progress = await getProgressRow(req.user.id, fileId);
+    return res.json({
+      progress: progress || {
+        user_id: req.user.id,
+        file_id: fileId,
+        watched_seconds: 0,
+        duration_seconds: 0,
+        max_percent: 0,
+        completed: 0,
+        completed_at: null,
+        last_position_seconds: 0,
+        updated_at: null,
+      },
+    });
+  } catch (err) {
+    console.error('File progress error', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.post('/files/:fileId/progress', authMiddleware, async (req, res) => {
+  try {
+    await initDb();
+    const fileId = Number(req.params.fileId);
+    if (!fileId) return res.status(400).json({ error: 'Invalid file id' });
+    const file = await getFileRow(fileId);
+    if (!file) return res.status(404).json({ error: 'File not found' });
+    if (!String(file.mime_type || '').startsWith('video/')) {
+      return res.status(400).json({ error: 'Progress is available only for video files' });
+    }
+    if (!(await canAccessFolder(req.user, file.folder_id))) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const parsed = parseOrThrow(videoProgressUpdateSchema, req.body || {});
+    const duration = Math.max(0, Number(parsed.duration_seconds || 0));
+    const watched = Math.max(0, Number(parsed.watched_seconds || 0));
+    const lastPosition = Math.max(0, Number(parsed.last_position_seconds || 0));
+    const currentPercent = duration > 0 ? Math.min(100, (watched / duration) * 100) : 0;
+
+    const existing = await getProgressRow(req.user.id, fileId);
+    const nextWatched = Math.max(Number(existing?.watched_seconds || 0), watched);
+    const nextDuration = Math.max(Number(existing?.duration_seconds || 0), duration);
+    const nextLastPosition = Math.max(Number(existing?.last_position_seconds || 0), lastPosition);
+    const nextPercent =
+      nextDuration > 0
+        ? Math.min(
+            100,
+            Math.max(Number(existing?.max_percent || 0), currentPercent, (nextWatched / nextDuration) * 100)
+          )
+        : Math.max(Number(existing?.max_percent || 0), currentPercent);
+    const completed = nextPercent >= 100 ? 1 : 0;
+
+    await query(
+      `INSERT INTO video_progress
+        (user_id, file_id, watched_seconds, duration_seconds, max_percent, completed, completed_at, last_position_seconds)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         watched_seconds = VALUES(watched_seconds),
+         duration_seconds = VALUES(duration_seconds),
+         max_percent = VALUES(max_percent),
+         completed = VALUES(completed),
+         completed_at = CASE
+           WHEN completed = 0 AND VALUES(completed) = 1 THEN CURRENT_TIMESTAMP
+           ELSE completed_at
+         END,
+         last_position_seconds = VALUES(last_position_seconds),
+         updated_at = CURRENT_TIMESTAMP`,
+      [
+        req.user.id,
+        fileId,
+        nextWatched,
+        nextDuration,
+        nextPercent,
+        completed,
+        completed ? new Date() : null,
+        nextLastPosition,
+      ]
+    );
+
+    const progress = await getProgressRow(req.user.id, fileId);
+    if (completed && !existing?.completed) {
+      await logEvent({
+        action: 'video_completed',
+        message: `Completed video ${file.original_name}`.slice(0, 200),
+        userId: req.user.id,
+        req,
+        meta: { file_id: fileId, folder_id: file.folder_id },
+      });
+    }
+    return res.json({ progress });
+  } catch (err) {
+    if (err?.statusCode) return res.status(err.statusCode).json({ error: err.message });
+    console.error('Update video progress error', err);
     return res.status(500).json({ error: 'Server error' });
   }
 });

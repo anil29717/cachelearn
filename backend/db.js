@@ -131,6 +131,27 @@ export async function initDb() {
   `;
   await pool.query(createFolderFiles);
 
+  const createVideoProgress = `
+    CREATE TABLE IF NOT EXISTS video_progress (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      file_id INT NOT NULL,
+      watched_seconds DECIMAL(10,2) NOT NULL DEFAULT 0,
+      duration_seconds DECIMAL(10,2) NOT NULL DEFAULT 0,
+      max_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
+      completed TINYINT(1) NOT NULL DEFAULT 0,
+      completed_at TIMESTAMP NULL DEFAULT NULL,
+      last_position_seconds DECIMAL(10,2) NOT NULL DEFAULT 0,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_video_progress_user_file (user_id, file_id),
+      KEY idx_video_progress_user (user_id),
+      KEY idx_video_progress_file (file_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (file_id) REFERENCES folder_files(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB;
+  `;
+  await pool.query(createVideoProgress);
+
   // Subfolders: parent_id on content_folders (idempotent migrations)
   try {
     await pool.query('ALTER TABLE content_folders ADD COLUMN parent_id INT NULL');

@@ -1,20 +1,16 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { apiClient } from '../utils/api';
-import { LibraryFile, LibraryFolder } from '../types';
+import { LibraryFile, LibraryFolder, VideoProgress } from '../types';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { toast } from '@/lib/toast';
 import { FolderTreeNav } from '../components/library/FolderTreeNav';
-import { ChevronRight, FileText } from 'lucide-react';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../components/ui/dialog';
-
-async function fetchAuthedBlob(path: string) {
-  const res = await fetch(path, { credentials: 'include' });
-  if (!res.ok) throw new Error('Could not load video');
-  return await res.blob();
-}
+import { SecureLibraryDocumentDialog } from '../components/library/SecureLibraryDocumentDialog';
+import { SecureLibraryVideoDialog } from '../components/library/SecureLibraryVideoDialog';
+import { ChevronRight, CheckCircle2, Circle, FileText } from 'lucide-react';
+import { Progress } from '../components/ui/progress';
 
 function folderBreadcrumb(folders: LibraryFolder[], folderId: number | null): LibraryFolder[] {
   if (folderId == null) return [];
@@ -28,16 +24,57 @@ function folderBreadcrumb(folders: LibraryFolder[], folderId: number | null): Li
   return chain;
 }
 
+function normalizeCompleted(value: number | boolean | undefined) {
+  return Number(value) === 1 || value === true;
+}
+
+function formatPercent(value: number | undefined) {
+  return `${Math.max(0, Math.min(100, Math.round(Number(value || 0))))}%`;
+}
+
+function formatClock(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '00:00';
+  const total = Math.floor(value);
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  const hours = Math.floor(mins / 60);
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
 export function ProfilePage() {
   const navigate = useNavigate();
   const { user, loading: authLoading } = useAuth();
   const [folders, setFolders] = useState<LibraryFolder[]>([]);
   const [selectedFolderId, setSelectedFolderId] = useState<number | null>(null);
   const [files, setFiles] = useState<LibraryFile[]>([]);
+  const [progressMap, setProgressMap] = useState<Record<number, VideoProgress>>({});
   const [loading, setLoading] = useState(true);
   const [videoOpen, setVideoOpen] = useState(false);
+  const [currentVideoFile, setCurrentVideoFile] = useState<LibraryFile | null>(null);
   const [videoTitle, setVideoTitle] = useState<string>('');
   const [videoUrl, setVideoUrl] = useState<string>('');
+  const [docOpen, setDocOpen] = useState(false);
+  const [docFile, setDocFile] = useState<LibraryFile | null>(null);
+  const savingProgressRef = useRef(false);
+
+  const loadFolderContent = useCallback(async (folderId: number | null) => {
+    if (!folderId) {
+      setFiles([]);
+      setProgressMap({});
+      return;
+    }
+    const [filesRes, progressRes] = await Promise.all([
+      apiClient.getFolderFiles(folderId),
+      apiClient.getFolderVideoProgress(folderId),
+    ]);
+    setFiles(filesRes.files);
+    setProgressMap(
+      Object.fromEntries((progressRes.progress || []).map((row) => [Number(row.file_id), row]))
+    );
+  }, []);
 
   const loadData = useCallback(async (selectId?: number | null) => {
     const foldersRes = await apiClient.getFolders();
@@ -47,22 +84,13 @@ export function ProfilePage() {
         ? selectId
         : foldersRes.folders[0]?.id ?? null;
     setSelectedFolderId(pick);
-    if (pick) {
-      const filesRes = await apiClient.getFolderFiles(pick);
-      setFiles(filesRes.files);
-    } else {
-      setFiles([]);
-    }
-  }, []);
+    await loadFolderContent(pick);
+  }, [loadFolderContent]);
 
   useEffect(() => {
     if (authLoading) return;
     if (!user) {
       navigate('/login');
-      return;
-    }
-    if (user.role === 'admin') {
-      navigate('/admin');
       return;
     }
     loadData()
@@ -76,8 +104,7 @@ export function ProfilePage() {
   const onSelectFolder = async (folderId: number) => {
     setSelectedFolderId(folderId);
     try {
-      const res = await apiClient.getFolderFiles(folderId);
-      setFiles(res.files);
+      await loadFolderContent(folderId);
     } catch (err) {
       console.error(err);
       toast.error('Failed to load files');
@@ -89,6 +116,27 @@ export function ProfilePage() {
     [folders, selectedFolderId]
   );
 
+  const saveVideoProgress = useCallback(
+    async (fileId: number, watchedSeconds: number, durationSeconds: number, lastPositionSeconds: number) => {
+      if (savingProgressRef.current) return;
+      savingProgressRef.current = true;
+      try {
+        const res = await apiClient.updateFileVideoProgress(fileId, {
+          watched_seconds: watchedSeconds,
+          duration_seconds: durationSeconds,
+          last_position_seconds: lastPositionSeconds,
+        });
+        const next = res.progress;
+        setProgressMap((prev) => ({ ...prev, [fileId]: next }));
+      } catch (err) {
+        console.error(err);
+      } finally {
+        savingProgressRef.current = false;
+      }
+    },
+    []
+  );
+
   if (authLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50">
@@ -96,7 +144,7 @@ export function ProfilePage() {
       </div>
     );
   }
-  if (!user || user.role === 'admin') return null;
+  if (!user) return null;
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50">
@@ -106,7 +154,7 @@ export function ProfilePage() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] bg-gray-50 overflow-hidden">
+    <div className="flex h-full min-h-0 bg-gray-50 overflow-hidden">
       <aside className="flex w-72 shrink-0 h-full flex-col border-r border-gray-200 bg-white shadow-sm">
         <div className="border-b border-gray-100 p-4">
           <h2 className="text-lg font-semibold text-gray-900">Library</h2>
@@ -165,11 +213,43 @@ export function ProfilePage() {
                         key={f.id}
                         className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-gray-50/80"
                       >
-                        <div className="min-w-0">
-                          <p className="truncate font-medium text-gray-900">{f.original_name}</p>
-                          <p className="text-xs text-gray-500">
-                            {(f.file_size / 1024 / 1024).toFixed(2)} MB
-                          </p>
+                        <div className="flex min-w-0 flex-1 items-start gap-3">
+                          {f.mime_type.startsWith('video/') ? (
+                            normalizeCompleted(progressMap[f.id]?.completed) ? (
+                              <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
+                            ) : (
+                              <Circle className="mt-0.5 h-5 w-5 shrink-0 text-gray-300" />
+                            )
+                          ) : (
+                            <FileText className="mt-0.5 h-5 w-5 shrink-0 text-red-500" />
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate font-medium text-gray-900">{f.original_name}</p>
+                            <p className="text-xs text-gray-500">
+                              {(f.file_size / 1024 / 1024).toFixed(2)} MB
+                              {f.mime_type.startsWith('video/') && (
+                                <> · {formatPercent(progressMap[f.id]?.max_percent)}</>
+                              )}
+                            </p>
+                            {f.mime_type.startsWith('video/') && (
+                              <div className="mt-2 space-y-1">
+                                <Progress value={Number(progressMap[f.id]?.max_percent || 0)} className="h-1.5" />
+                                <div className="flex items-center justify-between text-[11px] text-gray-500">
+                                  <span>
+                                    {normalizeCompleted(progressMap[f.id]?.completed)
+                                      ? 'Completed'
+                                      : 'In progress'}
+                                  </span>
+                                  <span>
+                                    {formatClock(Number(progressMap[f.id]?.watched_seconds || 0))}
+                                    {Number(progressMap[f.id]?.duration_seconds || 0) > 0
+                                      ? ` / ${formatClock(Number(progressMap[f.id]?.duration_seconds || 0))}`
+                                      : ''}
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         </div>
                         <Button
                           variant="outline"
@@ -177,33 +257,22 @@ export function ProfilePage() {
                           onClick={async () => {
                             try {
                               if (f.mime_type.startsWith('video/')) {
-                                // Best-effort security: fetch as blob with JWT, play in modal, hide download UI.
-                                const blob = await fetchAuthedBlob(`/api/library/files/${f.id}/stream`);
-                                const url = URL.createObjectURL(blob);
+                                const fileProgress = await apiClient.getFileVideoProgress(f.id);
+                                setProgressMap((prev) => ({ ...prev, [f.id]: fileProgress.progress }));
+                                setCurrentVideoFile(f);
                                 setVideoTitle(f.original_name);
-                                setVideoUrl(url);
+                                setVideoUrl(`/api/library/files/${f.id}/stream`);
                                 setVideoOpen(true);
                                 return;
                               }
-                              // Documents still download (authorized route).
-                              const res = await fetch(`/api/library/files/${f.id}/download`, {
-                                credentials: 'include',
-                              });
-                              if (!res.ok) throw new Error('Could not download file');
-                              const blob = await res.blob();
-                              const url = URL.createObjectURL(blob);
-                              const a = document.createElement('a');
-                              a.href = url;
-                              a.download = f.original_name;
-                              a.rel = 'noopener';
-                              a.click();
-                              setTimeout(() => URL.revokeObjectURL(url), 120_000);
+                              setDocFile(f);
+                              setDocOpen(true);
                             } catch (err: any) {
                               toast.error(err?.message || 'Failed to open file');
                             }
                           }}
                         >
-                          {f.mime_type.startsWith('video/') ? 'Play' : 'Download'}
+                          {f.mime_type.startsWith('video/') ? 'Play' : 'Open'}
                         </Button>
                       </li>
                     ))}
@@ -218,40 +287,37 @@ export function ProfilePage() {
         </main>
       </div>
 
-      <Dialog
+      <SecureLibraryVideoDialog
         open={videoOpen}
         onOpenChange={(open) => {
           setVideoOpen(open);
-          if (!open && videoUrl) {
-            URL.revokeObjectURL(videoUrl);
+          if (!open) {
             setVideoUrl('');
             setVideoTitle('');
+            setCurrentVideoFile(null);
           }
         }}
-      >
-        <DialogContent className="sm:max-w-4xl p-0 overflow-hidden">
-          <div className="bg-black">
-            <DialogHeader className="p-4">
-              <DialogTitle className="text-white text-sm">{videoTitle}</DialogTitle>
-              <DialogDescription className="sr-only">Internal video playback</DialogDescription>
-            </DialogHeader>
-            <div className="px-4 pb-4">
-              <video
-                src={videoUrl}
-                controls
-                autoPlay
-                controlsList="nodownload noremoteplayback"
-                disablePictureInPicture
-                className="w-full max-h-[70vh] rounded-lg bg-black"
-                onContextMenu={(e) => e.preventDefault()}
-              />
-              <p className="mt-2 text-xs text-gray-300">
-                Download is disabled in the UI. (Note: absolute prevention isn’t possible in browsers.)
-              </p>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+        title={videoTitle}
+        streamUrl={videoUrl}
+        viewerLabel={user?.email ?? ''}
+        trackProgress
+        file={currentVideoFile}
+        progressMap={progressMap}
+        setProgressMap={setProgressMap}
+        saveVideoProgress={saveVideoProgress}
+        userId={user?.id ?? 0}
+      />
+
+      <SecureLibraryDocumentDialog
+        open={docOpen}
+        onOpenChange={(open) => {
+          setDocOpen(open);
+          if (!open) setDocFile(null);
+        }}
+        title={docFile?.original_name ?? ''}
+        fileId={docFile?.id ?? 0}
+        mimeType={docFile?.mime_type ?? ''}
+      />
     </div>
   );
 }

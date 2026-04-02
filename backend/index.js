@@ -12,13 +12,17 @@ import { initDb } from './db.js';
 import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import { setIO } from './realtime.js';
-import { apiLimiter, isLocalInitRequest } from './security.js';
+import { apiLimiter, isLocalInitRequest, trustedNetworkMiddleware } from './security.js';
 
 dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 8080;
+
+if (process.env.TRUST_PROXY === '1') {
+  app.set('trust proxy', 1);
+}
 
 const corsOptions = {
   origin:
@@ -53,6 +57,7 @@ app.use(
   })
 );
 app.use('/api', apiLimiter);
+app.use('/api', trustedNetworkMiddleware);
 
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');

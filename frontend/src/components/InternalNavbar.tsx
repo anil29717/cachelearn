@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { BookOpen, LogOut } from 'lucide-react';
+import { BookOpen, LogOut, User } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from './ui/button';
 
@@ -33,6 +33,15 @@ export function InternalNavbar() {
           <div className="flex items-center gap-3">
             {user ? (
               <>
+                {user.role === 'employee' && (
+                  <Link
+                    to="/profile/account"
+                    className="hidden sm:inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-red-50 hover:text-red-800"
+                  >
+                    <User className="h-4 w-4" />
+                    Profile
+                  </Link>
+                )}
                 <div className="hidden sm:block text-right">
                   <div className="text-sm font-medium text-gray-900">{user.name}</div>
                   <div className="text-[11px] text-gray-500 capitalize">{user.role}</div>

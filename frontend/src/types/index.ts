@@ -38,3 +38,22 @@ export interface LibraryFile {
   uploaded_by: number;
   created_at: string;
 }
+
+export interface VideoProgress {
+  user_id: number;
+  file_id: number;
+  watched_seconds: number;
+  duration_seconds: number;
+  max_percent: number;
+  completed: number | boolean;
+  completed_at: string | null;
+  last_position_seconds: number;
+  updated_at: string | null;
+}
+
+export interface AdminVideoProgress extends VideoProgress {
+  original_name: string;
+  mime_type: string;
+  folder_id: number;
+  folder_name: string;
+}

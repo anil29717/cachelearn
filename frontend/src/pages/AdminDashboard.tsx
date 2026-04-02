@@ -1,16 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { SecureLibraryDocumentDialog } from '../components/library/SecureLibraryDocumentDialog';
+import { SecureLibraryVideoDialog } from '../components/library/SecureLibraryVideoDialog';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { apiClient } from '../utils/api';
-import { LibraryFile, LibraryFolder, User } from '../types';
+import { AdminVideoProgress, LibraryFile, LibraryFolder, User } from '../types';
 import { toast } from '@/lib/toast';
 import { ConfirmDestructiveDialog } from '@/components/feedback/ConfirmDestructiveDialog';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { FolderTreeNav } from '../components/library/FolderTreeNav';
-import { openLibraryFile } from '../utils/libraryFileAccess';
-import { ChevronRight, FileText, LayoutDashboard, FolderTree, FolderOpen, Users as UsersIcon, Shield, Upload, Trash2, ScrollText } from 'lucide-react';
+import { ChevronRight, CheckCircle2, FileText, LayoutDashboard, FolderTree, FolderOpen, Users as UsersIcon, Shield, Upload, Trash2, ScrollText, Circle } from 'lucide-react';
 import { Progress } from '../components/ui/progress';
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '../components/ui/chart';
 import { Bar, BarChart, CartesianGrid, XAxis } from 'recharts';
@@ -71,9 +72,10 @@ export function AdminDashboard() {
   const [uploadPercent, setUploadPercent] = useState(0);
   const [loading, setLoading] = useState(true);
   const [pendingFolderDeleteId, setPendingFolderDeleteId] = useState<number | null>(null);
+  const [pendingFileDelete, setPendingFileDelete] = useState<{ id: number; name: string } | null>(null);
   const [pendingUserDelete, setPendingUserDelete] = useState<{ id: number; email: string } | null>(null);
   const [activeSection, setActiveSection] = useState<
-    'dashboard' | 'content' | 'upload' | 'folders' | 'users' | 'logs'
+    'dashboard' | 'content' | 'upload' | 'folders' | 'users' | 'logs' | 'progress'
   >('content');
   const [summary, setSummary] = useState<{
     total_employees: number;
@@ -110,6 +112,16 @@ export function AdminDashboard() {
   const [logsTotal, setLogsTotal] = useState(0);
   const [logsPage, setLogsPage] = useState(1);
   const [logsLoading, setLogsLoading] = useState(false);
+  const [progressEmployeeId, setProgressEmployeeId] = useState<number | null>(null);
+  const [progressRows, setProgressRows] = useState<AdminVideoProgress[]>([]);
+  const [progressLoading, setProgressLoading] = useState(false);
+  const [progressEmployeeName, setProgressEmployeeName] = useState('');
+  const [previewVideoOpen, setPreviewVideoOpen] = useState(false);
+  const [previewVideoFile, setPreviewVideoFile] = useState<LibraryFile | null>(null);
+  const [previewVideoTitle, setPreviewVideoTitle] = useState('');
+  const [previewVideoUrl, setPreviewVideoUrl] = useState('');
+  const [previewDocOpen, setPreviewDocOpen] = useState(false);
+  const [previewDocFile, setPreviewDocFile] = useState<LibraryFile | null>(null);
 
   const loadData = useCallback(async (selectId?: number | null) => {
     const [usersRes, foldersRes, summaryRes] = await Promise.all([
@@ -169,6 +181,20 @@ export function AdminDashboard() {
     if (activeSection !== 'logs') return;
     loadLogs(logsPage);
   }, [activeSection, logsPage, loadLogs]);
+
+  const loadEmployeeProgress = useCallback(async (employeeId: number) => {
+    setProgressLoading(true);
+    try {
+      const res = await apiClient.getAdminUserVideoProgress(employeeId);
+      setProgressRows(res.progress || []);
+      setProgressEmployeeName(res.user?.name || '');
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to load employee progress');
+    } finally {
+      setProgressLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (authLoading) return;
@@ -237,6 +263,21 @@ export function AdminDashboard() {
     () => users.filter((u: any) => u.role === 'employee'),
     [users]
   );
+
+  useEffect(() => {
+    if (!employees.length) {
+      setProgressEmployeeId(null);
+      return;
+    }
+    if (progressEmployeeId == null || !employees.some((e) => e.id === progressEmployeeId)) {
+      setProgressEmployeeId(employees[0].id);
+    }
+  }, [employees, progressEmployeeId]);
+
+  useEffect(() => {
+    if (activeSection !== 'progress' || progressEmployeeId == null) return;
+    loadEmployeeProgress(progressEmployeeId);
+  }, [activeSection, progressEmployeeId, loadEmployeeProgress]);
 
   const refreshAssignedCount = useCallback(async () => {
     if (!selectedFolderId) {
@@ -432,6 +473,15 @@ export function AdminDashboard() {
           </button>
           <button
             type="button"
+            onClick={() => setActiveSection('progress')}
+            className={`w-full rounded-md px-3 py-2 text-left text-sm flex items-center gap-2 ${
+              activeSection === 'progress' ? 'bg-red-50 text-red-700' : 'hover:bg-gray-100 text-gray-700'
+            }`}
+          >
+            <CheckCircle2 className="h-4 w-4" /> Progress
+          </button>
+          <button
+            type="button"
             onClick={() => {
               setLogsPage(1);
               setActiveSection('logs');
@@ -524,12 +574,35 @@ export function AdminDashboard() {
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={async () => {
-                            try {
-                              await openLibraryFile(u.id, u.original_name, u.mime_type);
-                            } catch (e: any) {
-                              toast.error(e?.message || 'Failed to open file');
+                          onClick={() => {
+                            const mime = String(u.mime_type || '');
+                            if (mime.startsWith('video/')) {
+                              setPreviewVideoFile({
+                                id: u.id,
+                                folder_id: 0,
+                                original_name: u.original_name,
+                                stored_name: '',
+                                mime_type: u.mime_type,
+                                file_size: u.file_size,
+                                uploaded_by: 0,
+                                created_at: '',
+                              });
+                              setPreviewVideoTitle(u.original_name);
+                              setPreviewVideoUrl(`/api/library/files/${u.id}/stream`);
+                              setPreviewVideoOpen(true);
+                              return;
                             }
+                            setPreviewDocFile({
+                              id: u.id,
+                              folder_id: 0,
+                              original_name: u.original_name,
+                              stored_name: '',
+                              mime_type: u.mime_type,
+                              file_size: u.file_size,
+                              uploaded_by: 0,
+                              created_at: '',
+                            });
+                            setPreviewDocOpen(true);
                           }}
                         >
                           Open
@@ -811,6 +884,93 @@ export function AdminDashboard() {
             </Card>
           )}
 
+          {activeSection === 'progress' && (
+            <Card className="shadow-sm">
+              <CardHeader>
+                <CardTitle>Employee video progress</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="max-w-sm">
+                  <select
+                    value={progressEmployeeId ?? ''}
+                    onChange={(e) => setProgressEmployeeId(Number(e.target.value) || null)}
+                    className="h-10 w-full rounded-md border border-gray-200 bg-white px-3 text-sm"
+                  >
+                    {employees.map((employee) => (
+                      <option key={employee.id} value={employee.id}>
+                        {employee.name} · {employee.email}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {progressLoading ? (
+                  <p className="text-sm text-gray-600">Loading employee progress…</p>
+                ) : (
+                  <>
+                    <div className="rounded-lg border border-gray-100 bg-gray-50 p-4">
+                      <div className="text-sm font-medium text-gray-900">
+                        {progressEmployeeName || 'Employee progress'}
+                      </div>
+                      <div className="mt-1 text-xs text-gray-500">
+                        Completed videos are marked only when playback reaches 100%.
+                      </div>
+                    </div>
+
+                    <div className="overflow-auto rounded-md border border-gray-100">
+                      <table className="w-full text-left text-sm">
+                        <thead className="border-b bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
+                          <tr>
+                            <th className="p-3">Status</th>
+                            <th className="p-3">Video</th>
+                            <th className="p-3">Folder</th>
+                            <th className="p-3">Progress</th>
+                            <th className="p-3">Watched</th>
+                            <th className="p-3">Updated</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {progressRows.map((row) => (
+                            <tr key={`${row.user_id}-${row.file_id}`} className="border-b border-gray-50 hover:bg-gray-50/70">
+                              <td className="p-3">
+                                {Number(row.completed) === 1 ? (
+                                  <span className="inline-flex items-center gap-2 text-emerald-700">
+                                    <CheckCircle2 className="h-4 w-4" /> Completed
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-2 text-gray-500">
+                                    <Circle className="h-4 w-4" /> In progress
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-3 font-medium text-gray-900">{row.original_name}</td>
+                              <td className="p-3 text-gray-600">{row.folder_name}</td>
+                              <td className="p-3 min-w-[180px]">
+                                <div className="space-y-1">
+                                  <Progress value={Number(row.max_percent || 0)} className="h-2" />
+                                  <div className="text-xs text-gray-500">{Math.round(Number(row.max_percent || 0))}%</div>
+                                </div>
+                              </td>
+                              <td className="p-3 text-gray-600">
+                                {Math.floor(Number(row.watched_seconds || 0))}s / {Math.floor(Number(row.duration_seconds || 0))}s
+                              </td>
+                              <td className="p-3 text-gray-500">
+                                {row.updated_at ? String(row.updated_at).replace('T', ' ').slice(0, 19) : '—'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {!progressRows.length && (
+                        <div className="p-6 text-sm text-gray-500">No video progress has been recorded for this employee yet.</div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           {activeSection === 'logs' && (
             <Card className="shadow-sm">
               <CardHeader>
@@ -1032,19 +1192,34 @@ export function AdminDashboard() {
                             {contentFilter === 'all' ? ` · ${f.folder_name}` : ''}
                           </p>
                         </div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={async () => {
-                            try {
-                              await openLibraryFile(f.id, f.original_name, f.mime_type);
-                            } catch (err: any) {
-                              toast.error(err?.message || 'Failed to open file');
-                            }
-                          }}
-                        >
-                          {f.mime_type.startsWith('video/') ? 'Play' : 'Download'}
-                        </Button>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              if (f.mime_type.startsWith('video/')) {
+                                setPreviewVideoFile(f);
+                                setPreviewVideoTitle(f.original_name);
+                                setPreviewVideoUrl(`/api/library/files/${f.id}/stream`);
+                                setPreviewVideoOpen(true);
+                                return;
+                              }
+                              setPreviewDocFile(f);
+                              setPreviewDocOpen(true);
+                            }}
+                          >
+                            {f.mime_type.startsWith('video/') ? 'Play' : 'Open'}
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-red-700 border-red-200 hover:bg-red-50"
+                            onClick={() => setPendingFileDelete({ id: f.id, name: f.original_name })}
+                          >
+                            <Trash2 className="h-4 w-4 mr-1" />
+                            Delete
+                          </Button>
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -1140,6 +1315,32 @@ export function AdminDashboard() {
           </Dialog>
         </main>
 
+        <SecureLibraryVideoDialog
+          open={previewVideoOpen}
+          onOpenChange={(open) => {
+            setPreviewVideoOpen(open);
+            if (!open) {
+              setPreviewVideoUrl('');
+              setPreviewVideoTitle('');
+              setPreviewVideoFile(null);
+            }
+          }}
+          title={previewVideoTitle}
+          streamUrl={previewVideoUrl}
+          viewerLabel={user?.email ?? 'Admin'}
+        />
+
+        <SecureLibraryDocumentDialog
+          open={previewDocOpen}
+          onOpenChange={(open) => {
+            setPreviewDocOpen(open);
+            if (!open) setPreviewDocFile(null);
+          }}
+          title={previewDocFile?.original_name ?? ''}
+          fileId={previewDocFile?.id ?? 0}
+          mimeType={previewDocFile?.mime_type ?? ''}
+        />
+
         <ConfirmDestructiveDialog
           open={pendingFolderDeleteId !== null}
           onOpenChange={(o) => {
@@ -1157,6 +1358,32 @@ export function AdminDashboard() {
               toast.success('Folder removed');
             } catch (e: any) {
               toast.error(e?.message || 'Failed to delete folder');
+            }
+          }}
+        />
+        <ConfirmDestructiveDialog
+          open={pendingFileDelete !== null}
+          onOpenChange={(o) => {
+            if (!o) setPendingFileDelete(null);
+          }}
+          title="Delete file?"
+          description={
+            pendingFileDelete
+              ? `Remove “${pendingFileDelete.name}” from the library? The stored file will be deleted. This cannot be undone.`
+              : ''
+          }
+          confirmLabel="Delete file"
+          onConfirm={async () => {
+            if (!pendingFileDelete) return;
+            try {
+              await apiClient.deleteLibraryFile(pendingFileDelete.id);
+              await loadData(selectedFolderId);
+              if (contentFilter === 'all') {
+                await loadAllFiles();
+              }
+              toast.success('File deleted');
+            } catch (e: any) {
+              toast.error(e?.message || 'Failed to delete file');
             }
           }}
         />

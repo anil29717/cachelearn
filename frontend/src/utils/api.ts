@@ -1,4 +1,4 @@
-import { LibraryFile, LibraryFolder } from '../types';
+import { AdminVideoProgress, LibraryFile, LibraryFolder, VideoProgress } from '../types';
 
 // In the browser during `vite` dev, always use same-origin `/api` so the Vite proxy runs and
 // httpOnly session cookies work. (Pointing fetch at http://localhost:8080 breaks cookies across ports.)
@@ -113,6 +113,13 @@ export class ApiClient {
 
   async updateProfile(data: any) {
     return this.request<{ profile: any }>('/users/profile', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async changePassword(data: { current_password: string; new_password: string }) {
+    return this.request<{ success: boolean }>('/users/password', {
       method: 'PUT',
       body: JSON.stringify(data),
     });
@@ -282,6 +289,34 @@ export class ApiClient {
       method: 'PATCH',
       body: JSON.stringify({ original_name: originalName }),
     });
+  }
+
+  async deleteLibraryFile(fileId: number) {
+    return this.request<{ success: boolean }>(`/library/files/${fileId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getFolderVideoProgress(folderId: number) {
+    return this.request<{ progress: VideoProgress[] }>(`/library/folders/${folderId}/progress`);
+  }
+
+  async getFileVideoProgress(fileId: number) {
+    return this.request<{ progress: VideoProgress }>(`/library/files/${fileId}/progress`);
+  }
+
+  async updateFileVideoProgress(
+    fileId: number,
+    data: { watched_seconds: number; duration_seconds: number; last_position_seconds: number }
+  ) {
+    return this.request<{ progress: VideoProgress }>(`/library/files/${fileId}/progress`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getAdminUserVideoProgress(userId: number) {
+    return this.request<{ user: any; progress: AdminVideoProgress[] }>(`/admin/users/${userId}/video-progress`);
   }
 }
 

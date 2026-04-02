@@ -244,6 +244,37 @@ router.get('/users/:id/summary', authMiddleware, requireAdmin, async (req, res) 
   }
 });
 
+router.get('/users/:id/video-progress', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    await initDb();
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid user id' });
+
+    const userRows = await query('SELECT id, email, name, role FROM users WHERE id = ?', [id]);
+    if (!userRows.length) return res.status(404).json({ error: 'User not found' });
+
+    const progress = await query(
+      `SELECT vp.user_id, vp.file_id, vp.watched_seconds, vp.duration_seconds, vp.max_percent, vp.completed,
+              vp.completed_at, vp.last_position_seconds, vp.updated_at,
+              ff.original_name, ff.mime_type, ff.folder_id, cf.name AS folder_name
+       FROM video_progress vp
+       JOIN folder_files ff ON ff.id = vp.file_id
+       JOIN content_folders cf ON cf.id = ff.folder_id
+       WHERE vp.user_id = ?
+       ORDER BY vp.updated_at DESC, ff.original_name ASC`,
+      [id]
+    );
+
+    return res.json({
+      user: userRows[0],
+      progress,
+    });
+  } catch (err) {
+    console.error('Admin video progress error', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Stats (admin only)
 router.get('/stats', authMiddleware, requireAdmin, async (_req, res) => {
   try {
