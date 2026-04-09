@@ -2,5 +2,6 @@
 .env
 .env.local
 .env.*.local
-# Markdown files (not tracked)
+# Markdown — not tracked (except README.md anywhere)
 *.md
+!**/README.md

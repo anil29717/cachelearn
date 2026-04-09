@@ -25,8 +25,40 @@ import {
   TooltipTrigger,
 } from "./tooltip";
 
-const SIDEBAR_COOKIE_NAME = "sidebar_state";
-const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
+/** Sidebar open/collapsed UI preference (localStorage; not an auth cookie). */
+const SIDEBAR_STORAGE_KEY = "sidebar_state";
+const SIDEBAR_STORAGE_MAX_AGE_MS = 60 * 60 * 24 * 7;
+
+function readSidebarOpenFromStorage(fallback: boolean): boolean {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    const ts = window.localStorage.getItem(`${SIDEBAR_STORAGE_KEY}_ts`);
+    if (ts && Date.now() - Number(ts) > SIDEBAR_STORAGE_MAX_AGE_MS) {
+      window.localStorage.removeItem(SIDEBAR_STORAGE_KEY);
+      window.localStorage.removeItem(`${SIDEBAR_STORAGE_KEY}_ts`);
+      return fallback;
+    }
+    if (raw === "collapsed") return false;
+    if (raw === "expanded") return true;
+  } catch {
+    /* quota / private mode */
+  }
+  return fallback;
+}
+
+function writeSidebarOpenToStorage(open: boolean) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      SIDEBAR_STORAGE_KEY,
+      open ? "expanded" : "collapsed",
+    );
+    window.localStorage.setItem(`${SIDEBAR_STORAGE_KEY}_ts`, String(Date.now()));
+  } catch {
+    /* ignore */
+  }
+}
 const SIDEBAR_WIDTH = "16rem";
 const SIDEBAR_WIDTH_MOBILE = "18rem";
 const SIDEBAR_WIDTH_ICON = "3rem";
@@ -71,7 +103,9 @@ function SidebarProvider({
 
   // This is the internal state of the sidebar.
   // We use openProp and setOpenProp for control from outside the component.
-  const [_open, _setOpen] = React.useState(defaultOpen);
+  const [_open, _setOpen] = React.useState(() =>
+    readSidebarOpenFromStorage(defaultOpen),
+  );
   const open = openProp ?? _open;
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
@@ -82,10 +116,7 @@ function SidebarProvider({
         _setOpen(openState);
       }
 
-      // Sidebar UI preference only (not auth). SameSite + Secure on HTTPS.
-      const secure =
-        typeof window !== "undefined" && window.location.protocol === "https:" ? "; Secure" : "";
-      document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}; SameSite=Lax${secure}`;
+      writeSidebarOpenToStorage(openState);
     },
     [setOpenProp, open],
   );

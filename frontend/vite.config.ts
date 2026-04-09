@@ -1,13 +1,14 @@
 
   import { defineConfig } from 'vite';
   import react from '@vitejs/plugin-react-swc';
+  import basicSsl from '@vitejs/plugin-basic-ssl';
   import tailwindcss from '@tailwindcss/vite'
   import path from 'path';
 
   const proxyTarget = process.env.VITE_PROXY_TARGET || 'http://localhost:8080';
 
   export default defineConfig({
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), basicSsl()],
     resolve: {
       extensions: ['.js', '.jsx', '.ts', '.tsx', '.json'],
       alias: {

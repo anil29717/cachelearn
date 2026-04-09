@@ -46,8 +46,6 @@ function loadOrCreateSeedState() {
   }
   const admin = buildSeedIdentity('admin', 'Demo Admin');
   const employee = buildSeedIdentity('employee', 'Demo Employee');
-  const adminPass = randomString(14);
-  const employeePass = randomString(14);
   const state = {
     version: 2,
     admin: { email: admin.email, name: admin.name },
@@ -59,10 +57,7 @@ function loadOrCreateSeedState() {
   } catch (_) {
     /* */
   }
-  return {
-    ...state,
-    _firstRunPasswords: { admin: adminPass, employee: employeePass },
-  };
+  return state;
 }
 
 const seedState = loadOrCreateSeedState();
@@ -76,11 +71,8 @@ function getSeedPasswordForNewUser(role) {
   const envKey = role === 'admin' ? 'SEED_ADMIN_PASSWORD' : 'SEED_EMPLOYEE_PASSWORD';
   const fromEnv = process.env[envKey];
   if (fromEnv && String(fromEnv).trim()) return String(fromEnv).trim();
-  if (seedState._firstRunPasswords) {
-    return role === 'admin' ? seedState._firstRunPasswords.admin : seedState._firstRunPasswords.employee;
-  }
   throw new Error(
-    `Set ${envKey} in the environment to create missing seed users (passwords are not stored in ${seedStatePath}).`
+    `Set ${envKey} in the environment to create missing seed users (passwords are not stored in ${seedStatePath} or logged).`
   );
 }
 
@@ -153,13 +145,6 @@ async function run() {
     admin: { id: adminId, email: ADMIN_EMAIL },
     employee: { id: employeeId, email: EMPLOYEE_EMAIL },
   });
-  if (seedState._firstRunPasswords) {
-    console.warn(
-      'First-run passwords (shown once; not saved to disk). Store in a password manager or set SEED_ADMIN_PASSWORD / SEED_EMPLOYEE_PASSWORD for future runs.'
-    );
-    console.warn('  admin password:', seedState._firstRunPasswords.admin);
-    console.warn('  employee password:', seedState._firstRunPasswords.employee);
-  }
 }
 
 run().catch((e) => {

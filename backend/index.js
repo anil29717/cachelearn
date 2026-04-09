@@ -40,8 +40,10 @@ if (process.env.NODE_ENV === 'production') {
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// Only trust X-Forwarded-* from proxies in loopback range (typical same-host reverse proxy).
+// For other topologies, terminate TLS/proxy on loopback or extend trust configuration.
 if (process.env.TRUST_PROXY === '1') {
-  app.set('trust proxy', 1);
+  app.set('trust proxy', 'loopback');
 }
 
 const devOrigins = [

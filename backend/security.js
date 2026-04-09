@@ -44,8 +44,26 @@ export const authLimiter = rateLimit({
   message: { error: 'Too many login attempts. Please wait and try again.' },
 });
 
+/**
+ * Only treat X-Forwarded-For as authoritative when TRUST_PROXY=1 and the TCP peer
+ * is loopback (matches Express trust proxy 'loopback' — avoids spoofing from direct clients).
+ */
+function isTrustedProxySocket(req) {
+  const raw = req.socket?.remoteAddress;
+  if (!raw) return false;
+  try {
+    let addr = ipaddr.parse(String(raw).trim());
+    if (addr.kind() === 'ipv6' && addr.isIPv4MappedAddress()) {
+      addr = addr.toIPv4Address();
+    }
+    return addr.range() === 'loopback';
+  } catch {
+    return false;
+  }
+}
+
 function trustedForwardedFor(req) {
-  return process.env.TRUST_PROXY === '1';
+  return process.env.TRUST_PROXY === '1' && isTrustedProxySocket(req);
 }
 
 /** Prefer socket address unless behind a trusted reverse proxy (TRUST_PROXY=1). */
