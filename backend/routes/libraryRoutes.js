@@ -5,6 +5,7 @@ import multer from 'multer';
 import { initDb, query } from '../db.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { logEvent } from '../logger.js';
+import { libraryUploadLimiter } from '../security.js';
 import {
   createFolderSchema,
   fileRenameSchema,
@@ -17,7 +18,23 @@ import {
 const router = express.Router();
 
 const storageRoot = path.resolve('storage', 'library');
+const storageAbsRoot = path.resolve('storage');
 fs.mkdirSync(storageRoot, { recursive: true });
+
+/** Resolve a DB-stored relative path under `storage/` and block traversal. */
+function resolvedStorageFilePath(relativePath) {
+  if (typeof relativePath !== 'string' || !relativePath.trim()) {
+    throw new Error('Invalid path');
+  }
+  const abs = path.resolve(storageAbsRoot, relativePath);
+  const relToStorage = path.relative(storageAbsRoot, abs);
+  if (relToStorage.startsWith('..') || path.isAbsolute(relToStorage)) {
+    throw new Error('Invalid path');
+  }
+  return abs;
+}
+
+const MAX_LIBRARY_UPLOAD_BYTES = 512 * 1024 * 1024;
 
 function setLibrarySecurityHeaders(res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -94,6 +111,7 @@ const allowedExtensionsByMime = {
 };
 
 const upload = multer({
+  limits: { fileSize: MAX_LIBRARY_UPLOAD_BYTES },
   storage: multer.diskStorage({
     destination: (req, _file, cb) => {
       const dest = req.libraryUploadDest || storageRoot;
@@ -163,7 +181,7 @@ async function getFileRow(fileId) {
 async function getProgressRow(userId, fileId) {
   const rows = await query(
     `SELECT user_id, file_id, watched_seconds, duration_seconds, max_percent, completed, completed_at,
-            last_position_seconds, updated_at
+            last_position_seconds, engaged_watch_seconds, updated_at
      FROM video_progress
      WHERE user_id = ? AND file_id = ?`,
     [userId, fileId]
@@ -262,6 +280,7 @@ router.post(
   '/folders/:folderId/files',
   authMiddleware,
   requireAdmin,
+  libraryUploadLimiter,
   prepareLibraryUpload,
   upload.single('file'),
   async (req, res) => {
@@ -305,7 +324,7 @@ router.post(
     } catch (err) {
       if (uploadedPath) {
         try {
-          fs.unlinkSync(uploadedPath);
+          await fs.promises.unlink(uploadedPath);
         } catch (_) {
           /* ignore */
         }
@@ -362,6 +381,7 @@ router.get('/folders/:folderId/progress', authMiddleware, async (req, res) => {
               COALESCE(vp.completed, 0) AS completed,
               vp.completed_at,
               COALESCE(vp.last_position_seconds, 0) AS last_position_seconds,
+              COALESCE(vp.engaged_watch_seconds, 0) AS engaged_watch_seconds,
               vp.updated_at
        FROM folder_files ff
        LEFT JOIN video_progress vp
@@ -400,6 +420,7 @@ router.get('/files/:fileId/progress', authMiddleware, async (req, res) => {
         completed: 0,
         completed_at: null,
         last_position_seconds: 0,
+        engaged_watch_seconds: 0,
         updated_at: null,
       },
     });
@@ -427,25 +448,41 @@ router.post('/files/:fileId/progress', authMiddleware, async (req, res) => {
     const duration = Math.max(0, Number(parsed.duration_seconds || 0));
     const watched = Math.max(0, Number(parsed.watched_seconds || 0));
     const lastPosition = Math.max(0, Number(parsed.last_position_seconds || 0));
-    const currentPercent = duration > 0 ? Math.min(100, (watched / duration) * 100) : 0;
+    let engaged = Math.max(0, Number(parsed.engaged_watch_seconds || 0));
 
     const existing = await getProgressRow(req.user.id, fileId);
     const nextWatched = Math.max(Number(existing?.watched_seconds || 0), watched);
     const nextDuration = Math.max(Number(existing?.duration_seconds || 0), duration);
     const nextLastPosition = Math.max(Number(existing?.last_position_seconds || 0), lastPosition);
-    const nextPercent =
-      nextDuration > 0
-        ? Math.min(
-            100,
-            Math.max(Number(existing?.max_percent || 0), currentPercent, (nextWatched / nextDuration) * 100)
-          )
-        : Math.max(Number(existing?.max_percent || 0), currentPercent);
-    const completed = nextPercent >= 100 ? 1 : 0;
+    const prevEngaged = Number(existing?.engaged_watch_seconds || 0);
+    if (nextDuration > 0) {
+      engaged = Math.min(nextDuration * 1.05, Math.max(prevEngaged, engaged));
+    } else {
+      engaged = Math.max(prevEngaged, engaged);
+    }
+
+    const positionPercent = nextDuration > 0 ? Math.min(100, (nextLastPosition / nextDuration) * 100) : 0;
+    const engagedPercent = nextDuration > 0 ? Math.min(100, (engaged / nextDuration) * 100) : 0;
+    /** Progress bar: cannot exceed both playhead and real watch time (prevents seek-to-end showing 100%). */
+    const nextPercent = Math.min(
+      100,
+      Math.max(Number(existing?.max_percent || 0), Math.min(positionPercent, engagedPercent))
+    );
+
+    const ENGAGED_COMPLETION_RATIO = 0.92;
+    const END_POSITION_RATIO = 0.98;
+    const nearEnd =
+      nextDuration > 0 &&
+      (nextLastPosition >= nextDuration * END_POSITION_RATIO || nextWatched >= nextDuration * END_POSITION_RATIO);
+    const engagedEnough = nextDuration > 0 && engaged >= nextDuration * ENGAGED_COMPLETION_RATIO;
+    const newlyEligible = nearEnd && engagedEnough;
+    const wasCompleted = Number(existing?.completed) === 1;
+    const completed = wasCompleted || newlyEligible ? 1 : 0;
 
     await query(
       `INSERT INTO video_progress
-        (user_id, file_id, watched_seconds, duration_seconds, max_percent, completed, completed_at, last_position_seconds)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (user_id, file_id, watched_seconds, duration_seconds, max_percent, completed, completed_at, last_position_seconds, engaged_watch_seconds)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          watched_seconds = VALUES(watched_seconds),
          duration_seconds = VALUES(duration_seconds),
@@ -456,6 +493,7 @@ router.post('/files/:fileId/progress', authMiddleware, async (req, res) => {
            ELSE completed_at
          END,
          last_position_seconds = VALUES(last_position_seconds),
+         engaged_watch_seconds = VALUES(engaged_watch_seconds),
          updated_at = CURRENT_TIMESTAMP`,
       [
         req.user.id,
@@ -466,6 +504,7 @@ router.post('/files/:fileId/progress', authMiddleware, async (req, res) => {
         completed,
         completed ? new Date() : null,
         nextLastPosition,
+        engaged,
       ]
     );
 
@@ -526,9 +565,18 @@ router.delete('/files/:fileId', authMiddleware, requireAdmin, async (req, res) =
     const file = rows[0];
     await query('DELETE FROM folder_files WHERE id = ?', [fileId]);
 
-    const absolutePath = path.resolve('storage', file.relative_path);
+    let absolutePath;
+    try {
+      absolutePath = resolvedStorageFilePath(file.relative_path);
+    } catch {
+      return res.json({ success: true });
+    }
     if (fs.existsSync(absolutePath)) {
-      fs.unlinkSync(absolutePath);
+      try {
+        await fs.promises.unlink(absolutePath);
+      } catch (_) {
+        /* ignore */
+      }
     }
     return res.json({ success: true });
   } catch (err) {
@@ -553,7 +601,12 @@ router.get('/files/:fileId/download', authMiddleware, async (req, res) => {
     }
 
     const file = rows[0];
-    const absolutePath = path.resolve('storage', file.relative_path);
+    let absolutePath;
+    try {
+      absolutePath = resolvedStorageFilePath(file.relative_path);
+    } catch {
+      return res.status(400).json({ error: 'Invalid stored path' });
+    }
     if (!fs.existsSync(absolutePath)) return res.status(404).json({ error: 'Stored file is missing' });
 
     setLibrarySecurityHeaders(res);
@@ -585,7 +638,12 @@ router.get('/files/:fileId/stream', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Only video files support streaming endpoint' });
     }
 
-    const absolutePath = path.resolve('storage', file.relative_path);
+    let absolutePath;
+    try {
+      absolutePath = resolvedStorageFilePath(file.relative_path);
+    } catch {
+      return res.status(400).json({ error: 'Invalid stored path' });
+    }
     if (!fs.existsSync(absolutePath)) return res.status(404).json({ error: 'Stored file is missing' });
 
     const stat = fs.statSync(absolutePath);
@@ -710,18 +768,29 @@ router.delete('/folders/:folderId', authMiddleware, requireAdmin, async (req, re
     if (!rows.length) return res.status(404).json({ error: 'Folder not found' });
 
     const subtreeIds = await getSubtreeFolderIds(folderId);
-    const idList = subtreeIds.join(',');
-
+    const idPlaceholders = subtreeIds.map(() => '?').join(',');
     const fileRows = await query(
-      `SELECT relative_path FROM folder_files WHERE folder_id IN (${idList})`
+      `SELECT relative_path FROM folder_files WHERE folder_id IN (${idPlaceholders})`,
+      subtreeIds
     );
     for (const fr of fileRows) {
-      const abs = path.resolve('storage', fr.relative_path);
-      if (fs.existsSync(abs)) fs.unlinkSync(abs);
+      try {
+        const abs = resolvedStorageFilePath(fr.relative_path);
+        if (fs.existsSync(abs)) {
+          try {
+            await fs.promises.unlink(abs);
+          } catch (_) {
+            /* ignore */
+          }
+        }
+      } catch {
+        /* skip invalid stored paths */
+      }
     }
 
     const slugRows = await query(
-      `SELECT slug FROM content_folders WHERE id IN (${idList}) ORDER BY LENGTH(slug) DESC`
+      `SELECT slug FROM content_folders WHERE id IN (${idPlaceholders}) ORDER BY LENGTH(slug) DESC`,
+      subtreeIds
     );
     await query('DELETE FROM content_folders WHERE id = ?', [folderId]);
     for (const { slug } of slugRows) {

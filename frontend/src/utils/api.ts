@@ -307,7 +307,12 @@ export class ApiClient {
 
   async updateFileVideoProgress(
     fileId: number,
-    data: { watched_seconds: number; duration_seconds: number; last_position_seconds: number }
+    data: {
+      watched_seconds: number;
+      duration_seconds: number;
+      last_position_seconds: number;
+      engaged_watch_seconds: number;
+    }
   ) {
     return this.request<{ progress: VideoProgress }>(`/library/files/${fileId}/progress`, {
       method: 'POST',

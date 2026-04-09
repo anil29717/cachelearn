@@ -117,7 +117,13 @@ export function ProfilePage() {
   );
 
   const saveVideoProgress = useCallback(
-    async (fileId: number, watchedSeconds: number, durationSeconds: number, lastPositionSeconds: number) => {
+    async (
+      fileId: number,
+      watchedSeconds: number,
+      durationSeconds: number,
+      lastPositionSeconds: number,
+      engagedWatchSeconds: number
+    ) => {
       if (savingProgressRef.current) return;
       savingProgressRef.current = true;
       try {
@@ -125,6 +131,7 @@ export function ProfilePage() {
           watched_seconds: watchedSeconds,
           duration_seconds: durationSeconds,
           last_position_seconds: lastPositionSeconds,
+          engaged_watch_seconds: engagedWatchSeconds,
         });
         const next = res.progress;
         setProgressMap((prev) => ({ ...prev, [fileId]: next }));

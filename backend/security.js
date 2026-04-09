@@ -3,10 +3,19 @@ import ipaddr from 'ipaddr.js';
 
 export const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 300,
+  max: 100,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests. Please try again later.' },
+});
+
+/** Stricter cap for library uploads (large bodies). */
+export const libraryUploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many uploads. Please try again later.' },
 });
 
 export const authLimiter = rateLimit({

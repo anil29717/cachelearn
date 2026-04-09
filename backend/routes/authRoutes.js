@@ -11,20 +11,25 @@ const router = express.Router();
 
 const JWT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** Valid bcrypt hash so compare() always runs (mitigates login timing leaks vs missing user). */
+const BCRYPT_DUMMY_HASH =
+  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
+
 function signToken(payload) {
   const secret = process.env.JWT_SECRET;
   if (!secret || String(secret).trim() === '') {
     throw new Error('JWT secret not configured');
   }
-  return jwt.sign(payload, secret, { expiresIn: '7d' });
+  return jwt.sign(payload, secret, { expiresIn: '7d', algorithm: 'HS256' });
 }
 
 function setAuthCookie(res, token) {
   const secure = process.env.NODE_ENV === 'production';
+  const sameSite = process.env.NODE_ENV === 'production' ? 'strict' : 'lax';
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
     secure,
-    sameSite: 'lax',
+    sameSite,
     maxAge: JWT_MAX_AGE_MS,
     path: '/',
   });
@@ -32,7 +37,8 @@ function setAuthCookie(res, token) {
 
 function clearAuthCookie(res) {
   const secure = process.env.NODE_ENV === 'production';
-  res.clearCookie(COOKIE_NAME, { path: '/', httpOnly: true, secure, sameSite: 'lax' });
+  const sameSite = process.env.NODE_ENV === 'production' ? 'strict' : 'lax';
+  res.clearCookie(COOKIE_NAME, { path: '/', httpOnly: true, secure, sameSite });
 }
 
 router.post('/register', async (req, res) => {
@@ -57,11 +63,13 @@ router.post('/login', authLimiter, async (req, res) => {
     await initDb();
 
     const rows = await query('SELECT * FROM users WHERE email = ?', [email]);
-    if (!rows.length) {
+    const userRow = rows[0];
+    const hashForCompare = userRow?.password_hash || BCRYPT_DUMMY_HASH;
+    const match = await bcrypt.compare(password, hashForCompare);
+    if (!userRow) {
       await logEvent({ level: 'warn', action: 'auth_login_fail', message: 'Unknown email', req, meta: { email } });
       return res.status(401).json({ error: 'Invalid email or password' });
     }
-    const userRow = rows[0];
     if (Number(userRow.is_active) === 0) {
       await logEvent({
         level: 'warn',
@@ -73,7 +81,6 @@ router.post('/login', authLimiter, async (req, res) => {
       });
       return res.status(403).json({ error: 'Account is inactive. Contact admin.', code: 'ACCOUNT_INACTIVE' });
     }
-    const match = await bcrypt.compare(password, userRow.password_hash);
     if (!match) {
       await logEvent({ level: 'warn', action: 'auth_login_fail', message: 'Bad password', req, meta: { email } });
       return res.status(401).json({ error: 'Invalid email or password' });
@@ -109,6 +116,7 @@ router.get('/profile', authMiddleware, async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'User not found' });
     const p = rows[0];
     p.is_active = Number(p.is_active) === 1 ? 1 : 0;
+    res.set('Cache-Control', 'private, no-store');
     return res.json({ profile: p });
   } catch (err) {
     console.error('Profile error', err);

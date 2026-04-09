@@ -24,6 +24,11 @@ type ChartContextProps = {
 
 const ChartContext = React.createContext<ChartContextProps | null>(null);
 
+/** Limit CSS custom property names injected via style tag (defense in depth for chart config keys). */
+function safeChartToken(key: string) {
+  return String(key).replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
 function useChart() {
   const context = React.useContext(ChartContext);
 
@@ -90,7 +95,7 @@ ${colorConfig
     const color =
       itemConfig.theme?.[theme as keyof typeof itemConfig.theme] ||
       itemConfig.color;
-    return color ? `  --color-${key}: ${color};` : null;
+    return color ? `  --color-${safeChartToken(key)}: ${color};` : null;
   })
   .join("\n")}
 }

@@ -3,13 +3,15 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
+import fs from 'fs';
+import http from 'http';
+import https from 'https';
 import authRouter from './routes/authRoutes.js';
 import adminRouter from './routes/adminRoutes.js';
 import usersRouter from './routes/usersRoutes.js';
 import libraryRouter from './routes/libraryRoutes.js';
 import { API_MOUNTS } from './config/apiMounts.js';
 import { initDb } from './db.js';
-import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import { setIO } from './realtime.js';
 import { apiLimiter, isLocalInitRequest, trustedNetworkMiddleware } from './security.js';
@@ -17,7 +19,6 @@ import { apiLimiter, isLocalInitRequest, trustedNetworkMiddleware } from './secu
 dotenv.config();
 
 const app = express();
-const server = http.createServer(app);
 const PORT = process.env.PORT || 8080;
 
 if (process.env.TRUST_PROXY === '1') {
@@ -50,10 +51,24 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 app.use(cookieParser());
 app.use(express.json({ limit: '2mb' }));
+app.use((req, _res, next) => {
+  const body = req.body;
+  if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
+    for (const key of ['__proto__', 'constructor', 'prototype']) {
+      if (Object.prototype.hasOwnProperty.call(body, key)) {
+        delete body[key];
+      }
+    }
+  }
+  next();
+});
 app.use(
   helmet({
     crossOriginResourcePolicy: false,
     contentSecurityPolicy: false,
+    ...(process.env.NODE_ENV === 'production'
+      ? { hsts: { maxAge: 31536000, includeSubDomains: true, preload: false } }
+      : {}),
   })
 );
 app.use('/api', apiLimiter);
@@ -82,6 +97,12 @@ app.use(API_MOUNTS.ADMIN, adminRouter);
 app.use(API_MOUNTS.USERS, usersRouter);
 app.use(API_MOUNTS.LIBRARY, libraryRouter);
 
+app.use((err, _req, res, _next) => {
+  console.error('Unhandled error', err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'Internal error' });
+});
+
 // Initialize DB on demand for local development only
 app.post('/api/init-db', async (_req, res) => {
   if (process.env.NODE_ENV === 'production') {
@@ -99,29 +120,50 @@ app.post('/api/init-db', async (_req, res) => {
   }
 });
 
-const io = new SocketIOServer(server, {
-  cors: {
-    origin:
-      process.env.NODE_ENV === 'production'
-        ? process.env.FRONTEND_URL
-        : [
-            'http://localhost:4000',
-            'http://localhost:4001',
-            'http://localhost:5173',
-            'http://localhost:3000',
-            'http://localhost:3001',
-            'http://localhost:3002',
-            'http://192.168.0.20:3000',
-          ],
-    credentials: true,
-  },
-});
-setIO(io);
+const socketCors = {
+  origin:
+    process.env.NODE_ENV === 'production'
+      ? process.env.FRONTEND_URL
+      : [
+          'http://localhost:4000',
+          'http://localhost:4001',
+          'http://localhost:5173',
+          'http://localhost:3000',
+          'http://localhost:3001',
+          'http://localhost:3002',
+          'http://192.168.0.20:3000',
+        ],
+  credentials: true,
+};
 
-io.on('connection', (socket) => {
-  socket.on('disconnect', () => {});
-});
+function attachRealtime(httpServer) {
+  const io = new SocketIOServer(httpServer, { cors: socketCors });
+  setIO(io);
+  io.on('connection', (socket) => {
+    socket.on('disconnect', () => {});
+  });
+}
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Internal training server running on http://localhost:${PORT}`);
-});
+const certPath = process.env.HTTPS_CERT_PATH;
+const keyPath = process.env.HTTPS_KEY_PATH;
+if (certPath && keyPath) {
+  const tlsServer = https.createServer(
+    { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) },
+    app
+  );
+  attachRealtime(tlsServer);
+  tlsServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`Internal training server running on https://localhost:${PORT}`);
+  });
+} else {
+  const server = http.createServer(app);
+  attachRealtime(server);
+  if (process.env.NODE_ENV === 'production') {
+    console.warn(
+      'Server is HTTP-only: set HTTPS_CERT_PATH and HTTPS_KEY_PATH, or terminate TLS at a reverse proxy.'
+    );
+  }
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Internal training server running on http://localhost:${PORT}`);
+  });
+}

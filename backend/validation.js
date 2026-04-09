@@ -56,7 +56,12 @@ export const folderVisibilitySchema = z.object({
 });
 
 export const fileRenameSchema = z.object({
-  original_name: z.string().trim().min(1, 'original_name is required').max(255, 'original_name is too long'),
+  original_name: z
+    .string()
+    .trim()
+    .max(255, 'original_name is too long')
+    .transform((s) => s.replace(/[<>]/g, ''))
+    .pipe(z.string().min(1, 'original_name is required')),
 });
 
 export const folderAccessSchema = z.object({
@@ -67,6 +72,8 @@ export const videoProgressUpdateSchema = z.object({
   watched_seconds: z.coerce.number().min(0).max(24 * 60 * 60),
   duration_seconds: z.coerce.number().min(0).max(24 * 60 * 60),
   last_position_seconds: z.coerce.number().min(0).max(24 * 60 * 60),
+  /** Accumulated seconds of actual playback (small time deltas only); used to block seek-to-end completion. */
+  engaged_watch_seconds: z.coerce.number().min(0).max(24 * 60 * 60),
 });
 
 export function parseOrThrow(schema, input) {

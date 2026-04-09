@@ -152,6 +152,20 @@ export async function initDb() {
   `;
   await pool.query(createVideoProgress);
 
+  try {
+    await pool.query(
+      'ALTER TABLE video_progress ADD COLUMN engaged_watch_seconds DECIMAL(10,2) NOT NULL DEFAULT 0'
+    );
+  } catch (_) {}
+  try {
+    await pool.query(
+      `UPDATE video_progress
+       SET engaged_watch_seconds = duration_seconds
+       WHERE completed = 1 AND duration_seconds > 0
+         AND engaged_watch_seconds < duration_seconds * 0.85`
+    );
+  } catch (_) {}
+
   // Subfolders: parent_id on content_folders (idempotent migrations)
   try {
     await pool.query('ALTER TABLE content_folders ADD COLUMN parent_id INT NULL');

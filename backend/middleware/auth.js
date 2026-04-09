@@ -17,7 +17,7 @@ export function authMiddleware(req, res, next) {
     if (!secret || String(secret).trim() === '') {
       return res.status(500).json({ error: 'Server configuration error' });
     }
-    req.user = jwt.verify(token, secret);
+    req.user = jwt.verify(token, secret, { algorithms: ['HS256'] });
     next();
   } catch {
     return res.status(401).json({ error: 'Invalid token' });

@@ -1,17 +1,21 @@
 version: "3.9"
 
+# Create `.env` from `.env.example` — do not commit real secrets.
+
 services:
   db:
     image: mysql:8.4
     container_name: cachelearning-db
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: course_platform
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env (see .env.example)}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-course_platform}
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - db_data:/var/lib/mysql
+    security_opt:
+      - no-new-privileges:true
 
   backend:
     build:
@@ -26,15 +30,19 @@ services:
       PORT: 8080
       DB_HOST: db
       DB_PORT: 3306
-      DB_USER: root
-      DB_PASSWORD: root
-      DB_NAME: course_platform
-      JWT_SECRET: change_me_in_docker
-      FRONTEND_URL: http://localhost:4000
-      BACKEND_URL: http://localhost:8080
-      CONTACT_RECEIVER_EMAIL: admin@local.invalid
+      DB_USER: ${DB_USER:-root}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      DB_NAME: ${DB_NAME:-course_platform}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:4000}
+      BACKEND_URL: ${BACKEND_URL:-http://localhost:8080}
+      CONTACT_RECEIVER_EMAIL: ${CONTACT_RECEIVER_EMAIL:-admin@local.invalid}
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
   frontend:
     build:
@@ -47,7 +55,9 @@ services:
     environment:
       VITE_PROXY_TARGET: http://backend:8080
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   db_data:

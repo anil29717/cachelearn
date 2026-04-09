@@ -19,6 +19,7 @@ router.put('/profile', authMiddleware, async (req, res) => {
     params.push(req.user.id);
     await query(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, params);
     const rows = await query('SELECT id, email, name, role, avatar_url, created_at FROM users WHERE id = ?', [req.user.id]);
+    res.set('Cache-Control', 'private, no-store');
     return res.json({ profile: rows[0] });
   } catch (err) {
     if (err?.statusCode) return res.status(err.statusCode).json({ error: err.message });

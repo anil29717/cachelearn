@@ -255,7 +255,7 @@ router.get('/users/:id/video-progress', authMiddleware, requireAdmin, async (req
 
     const progress = await query(
       `SELECT vp.user_id, vp.file_id, vp.watched_seconds, vp.duration_seconds, vp.max_percent, vp.completed,
-              vp.completed_at, vp.last_position_seconds, vp.updated_at,
+              vp.completed_at, vp.last_position_seconds, vp.engaged_watch_seconds, vp.updated_at,
               ff.original_name, ff.mime_type, ff.folder_id, cf.name AS folder_name
        FROM video_progress vp
        JOIN folder_files ff ON ff.id = vp.file_id

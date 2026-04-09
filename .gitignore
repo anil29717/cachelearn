@@ -1,0 +1,5 @@
+# Local secrets and environment (do not commit)
+.env
+.env.local
+.env.*.local
+!.env.example

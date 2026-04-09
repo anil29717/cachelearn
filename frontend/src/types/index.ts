@@ -48,6 +48,8 @@ export interface VideoProgress {
   completed: number | boolean;
   completed_at: string | null;
   last_position_seconds: number;
+  /** Real playback time accumulated (excludes large seeks); used for completion. */
+  engaged_watch_seconds?: number;
   updated_at: string | null;
 }
 

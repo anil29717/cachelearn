@@ -6,6 +6,33 @@ function normalizeCompleted(value: number | boolean | undefined) {
   return Number(value) === 1 || value === true;
 }
 
+/** Max `currentTime` jump counted as normal playback (larger = seek, not counted toward completion). */
+const ENGAGED_CLOCK_MAX_DELTA = 2.5;
+const COMPLETION_ENGAGED_RATIO = 0.92;
+const COMPLETION_END_RATIO = 0.98;
+
+/** Only same-origin paths or full URLs on this origin (blocks open redirects / javascript: in <video src>). */
+function safeVideoStreamUrl(url: string): string {
+  const u = String(url || "").trim();
+  if (!u) return "";
+  if (u.startsWith("/") && !u.startsWith("//")) return u;
+  try {
+    const parsed = new URL(u, window.location.origin);
+    if (parsed.origin !== window.location.origin) return "";
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return "";
+  }
+}
+
+function completionFromMetrics(duration: number, currentTime: number, engaged: number) {
+  if (!Number.isFinite(duration) || duration <= 0) return false;
+  const nearEnd =
+    currentTime >= duration * COMPLETION_END_RATIO || currentTime >= duration - 0.35;
+  const engagedEnough = engaged >= duration * COMPLETION_ENGAGED_RATIO;
+  return nearEnd && engagedEnough;
+}
+
 type TrackProgressProps = {
   trackProgress: true;
   file: LibraryFile;
@@ -15,7 +42,8 @@ type TrackProgressProps = {
     fileId: number,
     watchedSeconds: number,
     durationSeconds: number,
-    lastPositionSeconds: number
+    lastPositionSeconds: number,
+    engagedWatchSeconds: number
   ) => Promise<void>;
   userId: number;
 };
@@ -64,6 +92,8 @@ export function SecureLibraryVideoDialog(props: SecureLibraryVideoDialogProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const lastSyncedSecondsRef = useRef(0);
   const progressSessionFileIdRef = useRef<number | null>(null);
+  const engagedAccumRef = useRef(0);
+  const lastEngagedVideoTimeRef = useRef<number | null>(null);
 
   const canClearObscured = () => {
     const t = screenshotGuardUntilRef.current;
@@ -71,10 +101,22 @@ export function SecureLibraryVideoDialog(props: SecureLibraryVideoDialogProps) {
   };
 
   const doSaveProgress = useCallback(
-    async (fileId: number, watchedSeconds: number, durationSeconds: number, lastPositionSeconds: number) => {
+    async (
+      fileId: number,
+      watchedSeconds: number,
+      durationSeconds: number,
+      lastPositionSeconds: number,
+      engagedWatchSeconds: number
+    ) => {
       if (!trackProgress || !saveVideoProgress) return;
       try {
-        await saveVideoProgress(fileId, watchedSeconds, durationSeconds, lastPositionSeconds);
+        await saveVideoProgress(
+          fileId,
+          watchedSeconds,
+          durationSeconds,
+          lastPositionSeconds,
+          engagedWatchSeconds
+        );
         lastSyncedSecondsRef.current = Math.max(lastSyncedSecondsRef.current, watchedSeconds);
       } catch {
         /* ignore */
@@ -82,6 +124,11 @@ export function SecureLibraryVideoDialog(props: SecureLibraryVideoDialogProps) {
     },
     [trackProgress, saveVideoProgress]
   );
+
+  const syncEngagedPlaybackClock = useCallback(() => {
+    const v = videoRef.current;
+    if (v) lastEngagedVideoTimeRef.current = v.currentTime;
+  }, []);
 
   useEffect(() => {
     if (!open || !trackProgress || !file) {
@@ -91,6 +138,8 @@ export function SecureLibraryVideoDialog(props: SecureLibraryVideoDialogProps) {
     if (progressSessionFileIdRef.current !== file.id) {
       progressSessionFileIdRef.current = file.id;
       lastSyncedSecondsRef.current = Number(progressMap[file.id]?.watched_seconds || 0);
+      engagedAccumRef.current = Number(progressMap[file.id]?.engaged_watch_seconds || 0);
+      lastEngagedVideoTimeRef.current = null;
     }
   }, [open, file, trackProgress, progressMap]);
 
@@ -210,7 +259,13 @@ export function SecureLibraryVideoDialog(props: SecureLibraryVideoDialogProps) {
       if (trackProgress && file && videoRef.current) {
         const watchedSeconds = Math.max(videoRef.current.currentTime || 0, lastSyncedSecondsRef.current);
         const durationSeconds = Number(videoRef.current.duration || 0);
-        void doSaveProgress(file.id, watchedSeconds, durationSeconds, videoRef.current.currentTime || 0);
+        void doSaveProgress(
+          file.id,
+          watchedSeconds,
+          durationSeconds,
+          videoRef.current.currentTime || 0,
+          engagedAccumRef.current
+        );
       }
       lastSyncedSecondsRef.current = 0;
     }
@@ -218,6 +273,7 @@ export function SecureLibraryVideoDialog(props: SecureLibraryVideoDialogProps) {
   };
 
   const currentFile = trackProgress ? file : null;
+  const safeStreamUrl = safeVideoStreamUrl(streamUrl);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -242,43 +298,69 @@ export function SecureLibraryVideoDialog(props: SecureLibraryVideoDialogProps) {
               {viewerLabel} · {watermarkTime}
             </div>
             <div className="relative w-full overflow-hidden rounded-lg">
-              <video
-                ref={videoRef}
-                src={streamUrl}
-                controls
-                autoPlay
-                controlsList="nodownload noremoteplayback"
-                disablePictureInPicture
-                className={`w-full max-h-[70vh] rounded-lg bg-black transition-[filter,transform] duration-200 ${
-                  playbackObscured ? 'scale-[1.02] blur-3xl' : ''
-                }`}
-                onContextMenu={(e) => e.preventDefault()}
-                onLoadedMetadata={(e) => {
-                  if (!trackProgress || !currentFile) return;
-                  const progress = progressMap[currentFile.id];
-                  const resumeAt = Number(progress?.last_position_seconds || 0);
-                  const duration = Number(e.currentTarget.duration || 0);
-                  if (resumeAt > 0 && duration > 0 && !normalizeCompleted(progress?.completed)) {
-                    e.currentTarget.currentTime = Math.min(resumeAt, Math.max(duration - 1, 0));
-                  }
-                }}
+              {!safeStreamUrl ? (
+                <p className="px-4 py-8 text-center text-sm text-white/80">Invalid or blocked video URL.</p>
+              ) : (
+                <>
+                <video
+                  ref={videoRef}
+                  src={safeStreamUrl}
+                  controls
+                  autoPlay
+                  controlsList="nodownload noremoteplayback"
+                  disablePictureInPicture
+                  className={`w-full max-h-[70vh] rounded-lg bg-black transition-[filter,transform] duration-200 ${
+                    playbackObscured ? 'scale-[1.02] blur-3xl' : ''
+                  }`}
+                  onContextMenu={(e) => e.preventDefault()}
+                  onLoadedMetadata={(e) => {
+                    if (!trackProgress || !currentFile) return;
+                    const progress = progressMap[currentFile.id];
+                    const resumeAt = Number(progress?.last_position_seconds || 0);
+                    const duration = Number(e.currentTarget.duration || 0);
+                    if (resumeAt > 0 && duration > 0 && !normalizeCompleted(progress?.completed)) {
+                      e.currentTarget.currentTime = Math.min(resumeAt, Math.max(duration - 1, 0));
+                    }
+                    lastEngagedVideoTimeRef.current = e.currentTarget.currentTime;
+                  }}
+                  onPlay={trackProgress ? syncEngagedPlaybackClock : undefined}
+                  onPause={trackProgress ? syncEngagedPlaybackClock : undefined}
+                  onSeeked={trackProgress ? syncEngagedPlaybackClock : undefined}
                 onTimeUpdate={(e) => {
                   if (!trackProgress || !currentFile || !setProgressMap) return;
                   const duration = Number(e.currentTarget.duration || 0);
                   if (!Number.isFinite(duration) || duration <= 0) return;
                   const currentTime = Number(e.currentTarget.currentTime || 0);
+                  const v = e.currentTarget;
+                  if (!v.paused) {
+                    const lastT = lastEngagedVideoTimeRef.current;
+                    if (lastT != null) {
+                      const dt = v.currentTime - lastT;
+                      if (dt > 0 && dt <= ENGAGED_CLOCK_MAX_DELTA) {
+                        engagedAccumRef.current += dt;
+                      }
+                    }
+                    lastEngagedVideoTimeRef.current = v.currentTime;
+                  } else {
+                    lastEngagedVideoTimeRef.current = v.currentTime;
+                  }
+
                   const watchedSeconds = Math.max(currentTime, lastSyncedSecondsRef.current);
+                  const engaged = engagedAccumRef.current;
                   const shouldFlush =
                     watchedSeconds - lastSyncedSecondsRef.current >= 5 || watchedSeconds >= duration;
                   if (shouldFlush) {
-                    void doSaveProgress(currentFile.id, watchedSeconds, duration, currentTime);
+                    void doSaveProgress(currentFile.id, watchedSeconds, duration, currentTime, engaged);
                   }
                   setProgressMap((prev) => {
                     const existing = prev[currentFile.id];
+                    const posP = Math.min(100, (currentTime / duration) * 100);
+                    const engP = Math.min(100, (engaged / duration) * 100);
                     const nextPercent = Math.min(
                       100,
-                      Math.max(Number(existing?.max_percent || 0), (watchedSeconds / duration) * 100)
+                      Math.max(Number(existing?.max_percent || 0), Math.min(posP, engP))
                     );
+                    const done = completionFromMetrics(duration, currentTime, engaged);
                     return {
                       ...prev,
                       [currentFile.id]: {
@@ -287,12 +369,11 @@ export function SecureLibraryVideoDialog(props: SecureLibraryVideoDialogProps) {
                         watched_seconds: watchedSeconds,
                         duration_seconds: duration,
                         max_percent: nextPercent,
-                        completed: nextPercent >= 100,
+                        completed: done,
                         completed_at:
-                          nextPercent >= 100
-                            ? existing?.completed_at || new Date().toISOString()
-                            : existing?.completed_at || null,
+                          done ? existing?.completed_at || new Date().toISOString() : existing?.completed_at || null,
                         last_position_seconds: currentTime,
+                        engaged_watch_seconds: engaged,
                         updated_at: existing?.updated_at || null,
                       },
                     };
@@ -301,21 +382,30 @@ export function SecureLibraryVideoDialog(props: SecureLibraryVideoDialogProps) {
                 onEnded={(e) => {
                   if (!trackProgress || !currentFile) return;
                   const duration = Number(e.currentTarget.duration || 0);
-                  void doSaveProgress(currentFile.id, duration, duration, duration);
+                  const currentTime = Number(e.currentTarget.currentTime || 0);
+                  void doSaveProgress(
+                    currentFile.id,
+                    Math.max(currentTime, lastSyncedSecondsRef.current),
+                    duration,
+                    currentTime,
+                    engagedAccumRef.current
+                  );
                 }}
-              />
-              {playbackObscured && (
-                <div
-                  className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 rounded-lg bg-black/55 px-4 text-center backdrop-blur-md"
-                  aria-live="polite"
-                >
-                  <p className="text-sm font-medium text-white">Playback hidden</p>
-                  <p className="max-w-sm text-xs text-white/85">
-                    {screenshotGuardUntil != null && Date.now() < screenshotGuardUntil
-                      ? 'Screenshot key detected — blur stays on for a few seconds so the capture step cannot show a clear frame.'
-                      : 'Focus this tab, keep the pointer inside the player window, and move the cursor back into the browser to continue.'}
-                  </p>
-                </div>
+                />
+                {playbackObscured && (
+                  <div
+                    className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 rounded-lg bg-black/55 px-4 text-center backdrop-blur-md"
+                    aria-live="polite"
+                  >
+                    <p className="text-sm font-medium text-white">Playback hidden</p>
+                    <p className="max-w-sm text-xs text-white/85">
+                      {screenshotGuardUntil != null && Date.now() < screenshotGuardUntil
+                        ? 'Screenshot key detected — blur stays on for a few seconds so the capture step cannot show a clear frame.'
+                        : 'Focus this tab, keep the pointer inside the player window, and move the cursor back into the browser to continue.'}
+                    </p>
+                  </div>
+                )}
+              </>
               )}
             </div>
             <p className="mt-2 text-xs text-gray-300">
