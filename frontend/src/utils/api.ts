@@ -64,7 +64,24 @@ export class ApiClient {
         (endpoint === '/auth/profile' || endpoint.startsWith('/auth/profile?'));
       if (!silentUnauthorized) {
         const safePath = String(endpoint).replace(/[^\w/?&=-]/g, '_').slice(0, 120);
-        console.error('API request failed', response.status, safePath, error);
+        const errPayload =
+          error && typeof error === 'object' && error !== null && 'error' in error
+            ? {
+                code:
+                  typeof (error as { code?: unknown }).code === 'string'
+                    ? String((error as { code: string }).code).replace(/[^\w.-]/g, '_').slice(0, 64)
+                    : undefined,
+                detail:
+                  typeof (error as { error?: unknown }).error === 'string'
+                    ? String((error as { error: string }).error).replace(/[\r\n]/g, ' ').slice(0, 200)
+                    : undefined,
+              }
+            : {};
+        console.error('API request failed', {
+          status: response.status,
+          path: safePath,
+          ...errPayload,
+        });
       }
 
       // Create error object with code if available
