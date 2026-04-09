@@ -18,7 +18,8 @@ vendor/
 # Build outputs
 dist/
 build/
-storage/seed-users.json
+# Uploaded library files and local data (never commit)
+storage/
 coverage/
 
 # IDE / Editor settings
