@@ -5,7 +5,13 @@ import multer from 'multer';
 import { initDb, query } from '../db.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { logEvent } from '../logger.js';
-import { libraryUploadLimiter } from '../security.js';
+import {
+  libraryUploadLimiter,
+  libraryReadLimiter,
+  libraryMutationLimiter,
+} from '../security.js';
+
+const MulterError = multer.MulterError;
 import {
   createFolderSchema,
   fileRenameSchema,
@@ -132,6 +138,22 @@ const upload = multer({
   },
 });
 
+function handleLibraryUpload(req, res, next) {
+  upload.single('file')(req, res, (err) => {
+    if (!err) return next();
+    if (err instanceof MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'File too large' });
+      }
+      return res.status(400).json({ error: 'Upload rejected. Check file size and multipart fields.' });
+    }
+    if (String(err?.message || '').includes('Unsupported file type')) {
+      return res.status(400).json({ error: err.message });
+    }
+    return next(err);
+  });
+}
+
 async function prepareLibraryUpload(req, res, next) {
   try {
     await initDb();
@@ -140,10 +162,18 @@ async function prepareLibraryUpload(req, res, next) {
     const folders = await query('SELECT id, slug FROM content_folders WHERE id = ?', [folderId]);
     if (!folders.length) return res.status(404).json({ error: 'Folder not found' });
     const folder = folders[0];
-    const folderPath = path.join(storageRoot, folder.slug);
+    const slug = String(folder.slug || '');
+    if (!slug || slug.includes('..') || /[/\\]/.test(slug) || !/^[\w-]+$/.test(slug)) {
+      return res.status(400).json({ error: 'Invalid folder storage path' });
+    }
+    const folderPath = path.join(storageRoot, slug);
+    const resolvedFolder = path.resolve(folderPath);
+    if (!resolvedFolder.startsWith(path.resolve(storageRoot) + path.sep) && resolvedFolder !== path.resolve(storageRoot)) {
+      return res.status(400).json({ error: 'Invalid folder path' });
+    }
     fs.mkdirSync(folderPath, { recursive: true });
     req.libraryUploadDest = folderPath;
-    req.libraryFolderSlug = folder.slug;
+    req.libraryFolderSlug = slug;
     next();
   } catch (err) {
     console.error('prepareLibraryUpload', err);
@@ -282,7 +312,7 @@ router.post(
   requireAdmin,
   libraryUploadLimiter,
   prepareLibraryUpload,
-  upload.single('file'),
+  handleLibraryUpload,
   async (req, res) => {
     const uploadedPath = req.file?.path;
     try {
@@ -330,7 +360,7 @@ router.post(
         }
       }
       console.error('Upload file error', err);
-      if (err instanceof multer.MulterError) {
+      if (err instanceof MulterError) {
         return res.status(400).json({ error: 'Upload rejected. Check file size and file type.' });
       }
       if (err?.message === 'Unsupported file type. Allowed: PDF, DOC, DOCX, and video files.') {
@@ -526,7 +556,7 @@ router.post('/files/:fileId/progress', authMiddleware, async (req, res) => {
   }
 });
 
-router.patch('/files/:fileId', authMiddleware, requireAdmin, async (req, res) => {
+router.patch('/files/:fileId', authMiddleware, requireAdmin, libraryMutationLimiter, async (req, res) => {
   try {
     await initDb();
     const fileId = Number(req.params.fileId);
@@ -550,7 +580,7 @@ router.patch('/files/:fileId', authMiddleware, requireAdmin, async (req, res) =>
   }
 });
 
-router.delete('/files/:fileId', authMiddleware, requireAdmin, async (req, res) => {
+router.delete('/files/:fileId', authMiddleware, requireAdmin, libraryMutationLimiter, async (req, res) => {
   try {
     await initDb();
     const fileId = Number(req.params.fileId);
@@ -585,7 +615,7 @@ router.delete('/files/:fileId', authMiddleware, requireAdmin, async (req, res) =
   }
 });
 
-router.get('/files/:fileId/download', authMiddleware, async (req, res) => {
+router.get('/files/:fileId/download', authMiddleware, libraryReadLimiter, async (req, res) => {
   try {
     await initDb();
     const fileId = Number(req.params.fileId);
@@ -611,14 +641,19 @@ router.get('/files/:fileId/download', authMiddleware, async (req, res) => {
 
     setLibrarySecurityHeaders(res);
     res.setHeader('Content-Type', file.mime_type || 'application/octet-stream');
-    return res.download(absolutePath, file.original_name);
+    return res.download(absolutePath, file.original_name, (err) => {
+      if (err && !res.headersSent) {
+        console.error('Download file error', err);
+        res.status(500).json({ error: 'Server error' });
+      }
+    });
   } catch (err) {
     console.error('Download file error', err);
     return res.status(500).json({ error: 'Server error' });
   }
 });
 
-router.get('/files/:fileId/stream', authMiddleware, async (req, res) => {
+router.get('/files/:fileId/stream', authMiddleware, libraryReadLimiter, async (req, res) => {
   try {
     await initDb();
     const fileId = Number(req.params.fileId);
@@ -658,7 +693,14 @@ router.get('/files/:fileId/stream', authMiddleware, async (req, res) => {
         'Content-Length': fileSize,
         'Accept-Ranges': 'bytes',
       });
-      fs.createReadStream(absolutePath).pipe(res);
+      const rs = fs.createReadStream(absolutePath);
+      rs.on('error', (e) => {
+        console.error('Stream read error', e);
+        if (!res.headersSent) res.status(500).end();
+        else rs.destroy();
+      });
+      res.on('close', () => rs.destroy());
+      rs.pipe(res);
       return;
     }
 
@@ -677,7 +719,14 @@ router.get('/files/:fileId/stream', authMiddleware, async (req, res) => {
       'Content-Length': chunkSize,
       'Content-Type': file.mime_type,
     });
-    fs.createReadStream(absolutePath, { start, end }).pipe(res);
+    const rs = fs.createReadStream(absolutePath, { start, end });
+    rs.on('error', (e) => {
+      console.error('Stream range read error', e);
+      if (!res.headersSent) res.status(500).end();
+      else rs.destroy();
+    });
+    res.on('close', () => rs.destroy());
+    rs.pipe(res);
   } catch (err) {
     console.error('Stream file error', err);
     return res.status(500).json({ error: 'Server error' });
@@ -758,7 +807,7 @@ router.put('/folders/:folderId/access', authMiddleware, requireAdmin, async (req
   }
 });
 
-router.delete('/folders/:folderId', authMiddleware, requireAdmin, async (req, res) => {
+router.delete('/folders/:folderId', authMiddleware, requireAdmin, libraryMutationLimiter, async (req, res) => {
   try {
     await initDb();
     const folderId = Number(req.params.folderId);

@@ -14,22 +14,55 @@ function buildSeedIdentity(prefix, name) {
   const slug = `${prefix}-${randomString(4)}`.toLowerCase();
   return {
     email: `${slug}@local.invalid`,
-    password: randomString(9),
     name,
   };
+}
+
+function stripPasswordsFromDisk(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  let changed = false;
+  for (const role of ['admin', 'employee']) {
+    if (obj[role] && typeof obj[role] === 'object' && 'password' in obj[role]) {
+      delete obj[role].password;
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 function loadOrCreateSeedState() {
   fs.mkdirSync(path.dirname(seedStatePath), { recursive: true });
   if (fs.existsSync(seedStatePath)) {
-    return JSON.parse(fs.readFileSync(seedStatePath, 'utf8'));
+    const raw = JSON.parse(fs.readFileSync(seedStatePath, 'utf8'));
+    if (stripPasswordsFromDisk(raw)) {
+      fs.writeFileSync(seedStatePath, JSON.stringify(raw, null, 2));
+    }
+    try {
+      fs.chmodSync(seedStatePath, 0o600);
+    } catch (_) {
+      /* windows or permission */
+    }
+    return raw;
   }
+  const admin = buildSeedIdentity('admin', 'Demo Admin');
+  const employee = buildSeedIdentity('employee', 'Demo Employee');
+  const adminPass = randomString(14);
+  const employeePass = randomString(14);
   const state = {
-    admin: buildSeedIdentity('admin', 'Demo Admin'),
-    employee: buildSeedIdentity('employee', 'Demo Employee'),
+    version: 2,
+    admin: { email: admin.email, name: admin.name },
+    employee: { email: employee.email, name: employee.name },
   };
   fs.writeFileSync(seedStatePath, JSON.stringify(state, null, 2));
-  return state;
+  try {
+    fs.chmodSync(seedStatePath, 0o600);
+  } catch (_) {
+    /* */
+  }
+  return {
+    ...state,
+    _firstRunPasswords: { admin: adminPass, employee: employeePass },
+  };
 }
 
 const seedState = loadOrCreateSeedState();
@@ -38,6 +71,18 @@ const EMPLOYEE_EMAIL = String(seedState.employee.email).trim().toLowerCase();
 const ADMIN_NAME = String(seedState.admin.name || 'Demo Admin').trim();
 const EMPLOYEE_NAME = String(seedState.employee.name || 'Demo Employee').trim();
 const KEEP_EMAILS = [ADMIN_EMAIL, EMPLOYEE_EMAIL];
+
+function getSeedPasswordForNewUser(role) {
+  const envKey = role === 'admin' ? 'SEED_ADMIN_PASSWORD' : 'SEED_EMPLOYEE_PASSWORD';
+  const fromEnv = process.env[envKey];
+  if (fromEnv && String(fromEnv).trim()) return String(fromEnv).trim();
+  if (seedState._firstRunPasswords) {
+    return role === 'admin' ? seedState._firstRunPasswords.admin : seedState._firstRunPasswords.employee;
+  }
+  throw new Error(
+    `Set ${envKey} in the environment to create missing seed users (passwords are not stored in ${seedStatePath}).`
+  );
+}
 
 async function ensureUser(email, name, role, password) {
   const users = await query('SELECT id FROM users WHERE email = ?', [email]);
@@ -92,11 +137,12 @@ async function removeExtraUsers() {
 
 async function run() {
   await initDb();
-  const adminPass = String(seedState.admin.password || '').trim();
-  const employeePass = String(seedState.employee.password || '').trim();
-  if (!adminPass || !employeePass) {
-    throw new Error(`Seed state is invalid. Delete ${seedStatePath} and run seed again.`);
-  }
+
+  const adminExists = (await query('SELECT id FROM users WHERE email = ?', [ADMIN_EMAIL])).length > 0;
+  const employeeExists = (await query('SELECT id FROM users WHERE email = ?', [EMPLOYEE_EMAIL])).length > 0;
+
+  const adminPass = adminExists ? 'x' : getSeedPasswordForNewUser('admin');
+  const employeePass = employeeExists ? 'x' : getSeedPasswordForNewUser('employee');
 
   const adminId = await ensureUser(ADMIN_EMAIL, ADMIN_NAME, 'admin', adminPass);
   const employeeId = await ensureUser(EMPLOYEE_EMAIL, EMPLOYEE_NAME, 'employee', employeePass);
@@ -104,10 +150,16 @@ async function run() {
   await removeExtraUsers();
 
   console.log('Seed completed:', {
-    admin: { id: adminId, email: ADMIN_EMAIL, password: adminPass },
-    employee: { id: employeeId, email: EMPLOYEE_EMAIL, password: employeePass },
+    admin: { id: adminId, email: ADMIN_EMAIL },
+    employee: { id: employeeId, email: EMPLOYEE_EMAIL },
   });
-  console.log(`Seed credentials saved locally in ${seedStatePath}`);
+  if (seedState._firstRunPasswords) {
+    console.warn(
+      'First-run passwords (shown once; not saved to disk). Store in a password manager or set SEED_ADMIN_PASSWORD / SEED_EMPLOYEE_PASSWORD for future runs.'
+    );
+    console.warn('  admin password:', seedState._firstRunPasswords.admin);
+    console.warn('  employee password:', seedState._firstRunPasswords.employee);
+  }
 }
 
 run().catch((e) => {

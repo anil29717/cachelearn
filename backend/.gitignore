@@ -26,5 +26,3 @@ coverage/
 .vscode/
 .idea/
 *.swp
-Dockerfile*
-docker-compose*.local.yml

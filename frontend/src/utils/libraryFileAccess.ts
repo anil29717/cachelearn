@@ -14,6 +14,10 @@ export async function openLibraryFile(fileId: number, filename: string, mimeType
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   if (mimeType.startsWith('video/')) {
+    if (!url.startsWith('blob:')) {
+      URL.revokeObjectURL(url);
+      throw new Error('Invalid object URL');
+    }
     window.open(url, '_blank', 'noopener,noreferrer');
   } else {
     const a = document.createElement('a');

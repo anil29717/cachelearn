@@ -63,7 +63,8 @@ export class ApiClient {
         response.status === 401 &&
         (endpoint === '/auth/profile' || endpoint.startsWith('/auth/profile?'));
       if (!silentUnauthorized) {
-        console.error(`API Error at ${endpoint}:`, error);
+        const safePath = String(endpoint).replace(/[^\w/?&=-]/g, '_').slice(0, 120);
+        console.error('API request failed', response.status, safePath, error);
       }
 
       // Create error object with code if available

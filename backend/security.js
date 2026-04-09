@@ -18,6 +18,24 @@ export const libraryUploadLimiter = rateLimit({
   message: { error: 'Too many uploads. Please try again later.' },
 });
 
+/** Download / stream (bandwidth-heavy). */
+export const libraryReadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 400,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many download requests. Please try again later.' },
+});
+
+/** Deletes and destructive library operations. */
+export const libraryMutationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please try again later.' },
+});
+
 export const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -26,9 +44,17 @@ export const authLimiter = rateLimit({
   message: { error: 'Too many login attempts. Please wait and try again.' },
 });
 
+function trustedForwardedFor(req) {
+  return process.env.TRUST_PROXY === '1';
+}
+
+/** Prefer socket address unless behind a trusted reverse proxy (TRUST_PROXY=1). */
 export function isLocalInitRequest(req) {
-  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  const candidate = forwarded || req.ip || req.socket?.remoteAddress || '';
+  const candidate = trustedForwardedFor(req)
+    ? String(req.headers['x-forwarded-for'] || '')
+        .split(',')[0]
+        .trim() || req.socket?.remoteAddress || req.ip
+    : req.socket?.remoteAddress || req.ip;
   const normalized = String(candidate).trim().toLowerCase();
   return (
     normalized === '127.0.0.1' ||
@@ -39,8 +65,13 @@ export function isLocalInitRequest(req) {
 }
 
 export function getClientIp(req) {
-  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return forwarded || req.ip || req.socket?.remoteAddress || '';
+  if (trustedForwardedFor(req)) {
+    const forwarded = String(req.headers['x-forwarded-for'] || '')
+      .split(',')[0]
+      .trim();
+    if (forwarded) return forwarded;
+  }
+  return req.socket?.remoteAddress || req.ip || '';
 }
 
 function normalizeIp(input) {
@@ -89,4 +120,34 @@ export function trustedNetworkMiddleware(req, res, next) {
     return next();
   }
   return res.status(403).json({ error: 'Access allowed only from office or VPN networks.' });
+}
+
+/**
+ * CSRF mitigation for cookie-based sessions: in production, mutating requests must present
+ * Origin or Referer aligned with FRONTEND_URL. (No csurf/session store — SPA + SameSite + this check.)
+ */
+export function requireBrowserOriginForMutations(req, res, next) {
+  if (process.env.NODE_ENV !== 'production') return next();
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
+  const fe = String(process.env.FRONTEND_URL || '')
+    .trim()
+    .replace(/\/$/, '');
+  if (!fe) return next();
+  const origin = req.headers.origin;
+  if (origin) {
+    const o = origin.replace(/\/$/, '');
+    if (o !== fe) return res.status(403).json({ error: 'Forbidden' });
+    return next();
+  }
+  const referer = req.headers.referer || '';
+  if (referer) {
+    try {
+      const u = new URL(referer);
+      const refOrigin = `${u.protocol}//${u.host}`.replace(/\/$/, '');
+      if (refOrigin !== fe) return res.status(403).json({ error: 'Forbidden' });
+    } catch {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+  }
+  return next();
 }

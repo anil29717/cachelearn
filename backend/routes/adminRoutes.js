@@ -173,15 +173,17 @@ router.delete('/users/:id', authMiddleware, requireAdmin, async (req, res) => {
     if (!id) return res.status(400).json({ error: 'Invalid user id' });
     if (Number(req.user?.id) === id) return res.status(400).json({ error: 'You cannot delete yourself', code: 'SELF_DELETE' });
 
-    const userRows = await query('SELECT id, role FROM users WHERE id = ?', [id]);
+    const userRows = await query('SELECT id, role, is_active FROM users WHERE id = ?', [id]);
     if (!userRows.length) return res.status(404).json({ error: 'User not found' });
     const user = userRows[0];
 
-    if (user.role === 'admin') {
-      const [adminCount] = await query("SELECT COUNT(*) as c FROM users WHERE role = 'admin'");
-      const count = Number(adminCount?.c || 0);
-      if (count <= 1) {
-        return res.status(400).json({ error: 'Cannot delete the last remaining admin', code: 'LAST_ADMIN' });
+    if (user.role === 'admin' && Number(user.is_active) === 1) {
+      const [others] = await query(
+        "SELECT COUNT(*) as c FROM users WHERE role = 'admin' AND is_active = 1 AND id != ?",
+        [id]
+      );
+      if (Number(others?.c || 0) < 1) {
+        return res.status(400).json({ error: 'Cannot delete the last active admin', code: 'LAST_ADMIN' });
       }
     }
 

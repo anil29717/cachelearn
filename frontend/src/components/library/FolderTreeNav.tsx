@@ -76,7 +76,7 @@ function TreeRow({
           )}
           <span className="truncate font-medium">{folder.name}</span>
           {String(folder.visibility || 'all') === 'restricted' && (
-            <Lock className="h-3.5 w-3.5 shrink-0 text-gray-400" title="Restricted" />
+            <Lock className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-label="Restricted" />
           )}
           <span className="shrink-0 text-xs text-gray-400">({folder.file_count})</span>
         </button>

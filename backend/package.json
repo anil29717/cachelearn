@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "nodemon index.js",
+    "dev:https": "cross-env HTTPS_CERT_PATH=./certs/localhost-cert.pem HTTPS_KEY_PATH=./certs/localhost-key.pem nodemon index.js",
     "start": "node index.js",
+    "start:https": "cross-env HTTPS_CERT_PATH=./certs/localhost-cert.pem HTTPS_KEY_PATH=./certs/localhost-key.pem node index.js",
+    "generate-cert": "node scripts/generate-dev-cert.mjs",
     "seed": "node seed.js"
   },
   "dependencies": {
@@ -18,12 +21,15 @@
     "helmet": "^8.1.0",
     "ipaddr.js": "^2.3.0",
     "jsonwebtoken": "^9.0.2",
-    "multer": "^1.4.5-lts.1",
+    "multer": "^2.1.1",
     "mysql2": "^3.9.7",
+    "secure-json-parse": "^4.1.0",
     "socket.io": "^4.8.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "cross-env": "^10.1.0",
+    "nodemon": "^3.1.14",
+    "selfsigned": "^5.5.0"
   }
 }

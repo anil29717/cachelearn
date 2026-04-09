@@ -2,7 +2,5 @@
 .env
 .env.local
 .env.*.local
-!.env.example
-
-# Local security checklist (not for the shared repo)
-cache_learn_security_fix_todo.md
+# Markdown files (not tracked)
+*.md
