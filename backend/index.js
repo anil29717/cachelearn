@@ -6,7 +6,6 @@ import helmet from 'helmet';
 import fs from 'fs';
 import http from 'http';
 import https from 'https';
-import path from 'path';
 import secureJsonParse from 'secure-json-parse';
 import authRouter from './routes/authRoutes.js';
 import adminRouter from './routes/adminRoutes.js';
@@ -22,6 +21,7 @@ import {
   trustedNetworkMiddleware,
   requireBrowserOriginForMutations,
 } from './security.js';
+import { resolveTlsArtifactPath } from './utils/safePaths.js';
 
 dotenv.config();
 
@@ -185,15 +185,9 @@ function attachRealtime(httpServer) {
   });
 }
 
-function resolveTlsFilePath(p) {
-  if (!p) return p;
-  const s = String(p).trim();
-  if (path.isAbsolute(s)) return s;
-  return path.resolve(process.cwd(), s);
-}
-
-const certPath = resolveTlsFilePath(process.env.HTTPS_CERT_PATH);
-const keyPath = resolveTlsFilePath(process.env.HTTPS_KEY_PATH);
+// TLS paths from env must stay under cwd or HTTPS_ARTIFACT_ROOT (see utils/safePaths.js).
+const certPath = resolveTlsArtifactPath(process.env.HTTPS_CERT_PATH);
+const keyPath = resolveTlsArtifactPath(process.env.HTTPS_KEY_PATH);
 if (certPath && keyPath) {
   let tlsServer;
   try {

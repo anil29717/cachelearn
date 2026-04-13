@@ -1,0 +1,13 @@
+# Reproducible image: build inside Docker; exclude local artifacts and secrets.
+node_modules
+npm-debug.log*
+dist
+.env
+.env.*
+!.env.example
+.git
+.github
+.gitignore
+*.md
+coverage
+.nyc_output

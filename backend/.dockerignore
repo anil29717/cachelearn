@@ -1,0 +1,16 @@
+# Smaller build context, faster builds, lower risk of copying secrets or local data into the image.
+node_modules
+npm-debug.log*
+yarn-error.log*
+.env
+.env.*
+!.env.example
+.git
+.github
+.gitignore
+*.md
+coverage
+.nyc_output
+storage
+certs
+*.pem

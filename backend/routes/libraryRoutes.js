@@ -6,6 +6,11 @@ import { initDb, query } from '../db.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { logEvent } from '../logger.js';
 import {
+  assertAbsoluteUnderStorageRoot,
+  getSafeLibrarySubdirPath,
+  getVerifiedFilePathUnderBase,
+} from '../utils/safePaths.js';
+import {
   libraryUploadLimiter,
   libraryReadLimiter,
   libraryMutationLimiter,
@@ -27,17 +32,18 @@ const storageRoot = path.resolve('storage', 'library');
 const storageAbsRoot = path.resolve('storage');
 fs.mkdirSync(storageRoot, { recursive: true });
 
-/** Resolve a DB-stored relative path under `storage/` and block traversal. */
+/** DB `relative_path` → verified absolute path under `storage/` (blocks traversal + symlink escape). */
 function resolvedStorageFilePath(relativePath) {
-  if (typeof relativePath !== 'string' || !relativePath.trim()) {
-    throw new Error('Invalid path');
+  return getVerifiedFilePathUnderBase(storageAbsRoot, relativePath);
+}
+
+async function fileExistsSafe(absPath) {
+  try {
+    await fs.promises.access(absPath, fs.constants.F_OK);
+    return true;
+  } catch {
+    return false;
   }
-  const abs = path.resolve(storageAbsRoot, relativePath);
-  const relToStorage = path.relative(storageAbsRoot, abs);
-  if (relToStorage.startsWith('..') || path.isAbsolute(relToStorage)) {
-    throw new Error('Invalid path');
-  }
-  return abs;
 }
 
 const MAX_LIBRARY_UPLOAD_BYTES = 512 * 1024 * 1024;
@@ -163,13 +169,11 @@ async function prepareLibraryUpload(req, res, next) {
     if (!folders.length) return res.status(404).json({ error: 'Folder not found' });
     const folder = folders[0];
     const slug = String(folder.slug || '');
-    if (!slug || slug.includes('..') || /[/\\]/.test(slug) || !/^[\w-]+$/.test(slug)) {
+    let folderPath;
+    try {
+      folderPath = getSafeLibrarySubdirPath(storageRoot, slug);
+    } catch {
       return res.status(400).json({ error: 'Invalid folder storage path' });
-    }
-    const folderPath = path.join(storageRoot, slug);
-    const resolvedFolder = path.resolve(folderPath);
-    if (!resolvedFolder.startsWith(path.resolve(storageRoot) + path.sep) && resolvedFolder !== path.resolve(storageRoot)) {
-      return res.status(400).json({ error: 'Invalid folder path' });
     }
     fs.mkdirSync(folderPath, { recursive: true });
     req.libraryUploadDest = folderPath;
@@ -252,7 +256,12 @@ router.post('/folders', authMiddleware, requireAdmin, async (req, res) => {
       [name, slug, req.user.id, parentId || null]
     );
 
-    const folderPath = path.join(storageRoot, slug);
+    let folderPath;
+    try {
+      folderPath = getSafeLibrarySubdirPath(storageRoot, slug);
+    } catch {
+      return res.status(500).json({ error: 'Server error' });
+    }
     fs.mkdirSync(folderPath, { recursive: true });
 
     return res.status(201).json({
@@ -324,8 +333,13 @@ router.post(
       if (!file) return res.status(400).json({ error: 'No file uploaded' });
 
       const storedName = file.filename;
-      const absolutePath = file.path;
-      const relativePath = path.relative(path.resolve('storage'), absolutePath).replace(/\\/g, '/');
+      let absolutePath;
+      try {
+        absolutePath = assertAbsoluteUnderStorageRoot(file.path, storageAbsRoot);
+      } catch {
+        return res.status(400).json({ error: 'Invalid upload path' });
+      }
+      const relativePath = path.relative(storageAbsRoot, absolutePath).replace(/\\/g, '/');
       const result = await query(
         `INSERT INTO folder_files
       (folder_id, original_name, stored_name, relative_path, mime_type, file_size, uploaded_by)
@@ -354,7 +368,8 @@ router.post(
     } catch (err) {
       if (uploadedPath) {
         try {
-          await fs.promises.unlink(uploadedPath);
+          const safeUnlink = assertAbsoluteUnderStorageRoot(uploadedPath, storageAbsRoot);
+          await fs.promises.unlink(safeUnlink);
         } catch (_) {
           /* ignore */
         }
@@ -601,7 +616,7 @@ router.delete('/files/:fileId', authMiddleware, requireAdmin, libraryMutationLim
     } catch {
       return res.json({ success: true });
     }
-    if (fs.existsSync(absolutePath)) {
+    if (await fileExistsSafe(absolutePath)) {
       try {
         await fs.promises.unlink(absolutePath);
       } catch (_) {
@@ -637,7 +652,7 @@ router.get('/files/:fileId/download', authMiddleware, libraryReadLimiter, async 
     } catch {
       return res.status(400).json({ error: 'Invalid stored path' });
     }
-    if (!fs.existsSync(absolutePath)) return res.status(404).json({ error: 'Stored file is missing' });
+    if (!(await fileExistsSafe(absolutePath))) return res.status(404).json({ error: 'Stored file is missing' });
 
     setLibrarySecurityHeaders(res);
     res.setHeader('Content-Type', file.mime_type || 'application/octet-stream');
@@ -679,9 +694,12 @@ router.get('/files/:fileId/stream', authMiddleware, libraryReadLimiter, async (r
     } catch {
       return res.status(400).json({ error: 'Invalid stored path' });
     }
-    if (!fs.existsSync(absolutePath)) return res.status(404).json({ error: 'Stored file is missing' });
-
-    const stat = fs.statSync(absolutePath);
+    let stat;
+    try {
+      stat = await fs.promises.stat(absolutePath);
+    } catch {
+      return res.status(404).json({ error: 'Stored file is missing' });
+    }
     const fileSize = stat.size;
     const range = req.headers.range;
 
@@ -825,7 +843,7 @@ router.delete('/folders/:folderId', authMiddleware, requireAdmin, libraryMutatio
     for (const fr of fileRows) {
       try {
         const abs = resolvedStorageFilePath(fr.relative_path);
-        if (fs.existsSync(abs)) {
+        if (await fileExistsSafe(abs)) {
           try {
             await fs.promises.unlink(abs);
           } catch (_) {
@@ -843,9 +861,18 @@ router.delete('/folders/:folderId', authMiddleware, requireAdmin, libraryMutatio
     );
     await query('DELETE FROM content_folders WHERE id = ?', [folderId]);
     for (const { slug } of slugRows) {
-      const folderPath = path.join(storageRoot, slug);
-      if (fs.existsSync(folderPath)) {
-        fs.rmSync(folderPath, { recursive: true, force: true });
+      let folderPath;
+      try {
+        folderPath = getSafeLibrarySubdirPath(storageRoot, slug);
+      } catch {
+        continue;
+      }
+      if (await fileExistsSafe(folderPath)) {
+        try {
+          await fs.promises.rm(folderPath, { recursive: true, force: true });
+        } catch (_) {
+          /* ignore */
+        }
       }
     }
     return res.json({ success: true });

@@ -140,32 +140,57 @@ export function trustedNetworkMiddleware(req, res, next) {
   return res.status(403).json({ error: 'Access allowed only from office or VPN networks.' });
 }
 
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/** Normalize configured site URL to a comparable origin (scheme + host [+ port]). */
+function allowedFrontendOrigin() {
+  const raw = String(process.env.FRONTEND_URL || '').trim();
+  if (!raw) return null;
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * CSRF mitigation for cookie-based sessions: in production, mutating requests must present
- * Origin or Referer aligned with FRONTEND_URL. (No csurf/session store — SPA + SameSite + this check.)
+ * Strict CSRF defense for cookie-based sessions (double-submit not required).
+ * Production only: mutating /api requests must send BOTH `Origin` and `Referer`, each parseable
+ * and matching `FRONTEND_URL` origin. Stops forged cross-site posts that omit or spoof one header.
+ * Pair with SameSite cookies (`authRoutes`). Non-browser clients must not rely on cookie auth alone.
  */
 export function requireBrowserOriginForMutations(req, res, next) {
   if (process.env.NODE_ENV !== 'production') return next();
-  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
-  const fe = String(process.env.FRONTEND_URL || '')
-    .trim()
-    .replace(/\/$/, '');
-  if (!fe) return next();
-  const origin = req.headers.origin;
-  if (origin) {
-    const o = origin.replace(/\/$/, '');
-    if (o !== fe) return res.status(403).json({ error: 'Forbidden' });
-    return next();
+  if (!MUTATING_METHODS.has(req.method)) return next();
+
+  const allowed = allowedFrontendOrigin();
+  if (!allowed) return next();
+
+  const originHdr = req.headers.origin;
+  const refererHdr = req.headers.referer;
+  if (!originHdr?.trim() || !refererHdr?.trim()) {
+    return res.status(403).json({ error: 'Forbidden' });
   }
-  const referer = req.headers.referer || '';
-  if (referer) {
-    try {
-      const u = new URL(referer);
-      const refOrigin = `${u.protocol}//${u.host}`.replace(/\/$/, '');
-      if (refOrigin !== fe) return res.status(403).json({ error: 'Forbidden' });
-    } catch {
-      return res.status(403).json({ error: 'Forbidden' });
-    }
+
+  let originOrigin;
+  let refererOrigin;
+  try {
+    originOrigin = new URL(String(originHdr).trim()).origin;
+  } catch {
+    return res.status(403).json({ error: 'Forbidden' });
   }
+  try {
+    refererOrigin = new URL(String(refererHdr).trim()).origin;
+  } catch {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  if (originOrigin !== allowed || refererOrigin !== allowed) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
   return next();
 }
+
+/** Alias for clearer imports in apps that name middleware by concern. */
+export const csrfProtectionForMutations = requireBrowserOriginForMutations;

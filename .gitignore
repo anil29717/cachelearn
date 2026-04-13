@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
-# Markdown — not tracked (except README.md anywhere)
+# Markdown — not tracked (except policy/docs we want in repo)
 *.md
 !**/README.md
+!SECURITY.md
