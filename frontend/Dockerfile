@@ -1,23 +1,28 @@
-# Build: full devDependencies for Vite; runtime: static files only, non-root.
-FROM node:20-alpine3.19 AS build
+# Build with full devDependencies; serve static files as non-root (bookworm-slim for scanner-friendly base).
+FROM node:20-bookworm-slim AS build
 WORKDIR /app
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM node:20-alpine3.19
+FROM node:20-bookworm-slim
 WORKDIR /app
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 
-RUN addgroup -g 1001 -S app \
-  && adduser -S -u 1001 -G app app \
-  && npm install -g serve@14
+RUN groupadd --gid 1001 app && useradd --uid 1001 --gid app --shell /usr/sbin/nologin --create-home app \
+  && npm install -g serve@14 \
+  && npm cache clean --force
 
 COPY --from=build --chown=app:app /app/dist ./dist
 
 USER app
 
-# Match HEALTHCHECK and scanner expectations; override with -e if you map another host port.
 ENV NODE_ENV=production
 EXPOSE 3000
 
