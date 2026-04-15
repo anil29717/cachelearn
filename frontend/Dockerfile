@@ -1,21 +1,16 @@
-# Build with full devDependencies; serve static files as non-root (bookworm-slim for scanner-friendly base).
-FROM node:20-bookworm-slim AS build
+# Same base as backend (node:20-alpine3.21) so one update path and comparable CVE posture vs bookworm-slim.
+FROM node:20-alpine3.21 AS build
 WORKDIR /app
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache ca-certificates
 COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM node:20-bookworm-slim
+FROM node:20-alpine3.21
 WORKDIR /app
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
-
-RUN groupadd --gid 1001 app && useradd --uid 1001 --gid app --shell /usr/sbin/nologin --create-home app \
+RUN apk add --no-cache ca-certificates \
+  && addgroup -g 1001 -S app && adduser -S -u 1001 -G app app \
   && npm install -g serve@14 \
   && npm cache clean --force
 

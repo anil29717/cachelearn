@@ -164,7 +164,10 @@ export function requireBrowserOriginForMutations(req, res, next) {
   if (!MUTATING_METHODS.has(req.method)) return next();
 
   const allowed = allowedFrontendOrigin();
-  if (!allowed) return next();
+  // Fail closed: mutating API calls must not proceed without a known allowed origin.
+  if (!allowed) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
 
   const originHdr = req.headers.origin;
   const refererHdr = req.headers.referer;
