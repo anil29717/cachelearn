@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -11,9 +12,8 @@ const router = express.Router();
 
 const JWT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** Valid bcrypt hash so compare() always runs (mitigates login timing leaks vs missing user). */
-const BCRYPT_DUMMY_HASH =
-  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
+/** Not a user credential — generated once at startup so compare() runs for unknown emails. */
+const BCRYPT_DUMMY_HASH = bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), 10);
 
 function signToken(payload) {
   const secret = process.env.JWT_SECRET;

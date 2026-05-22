@@ -22,6 +22,9 @@ build/
 storage/
 coverage/
 
+# Local dev TLS — create with: npm run generate-cert (never commit private keys)
+certs/*.pem
+
 # IDE / Editor settings
 .vscode/
 .idea/

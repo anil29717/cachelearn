@@ -52,6 +52,46 @@ export function getSafeLibrarySubdirPath(libraryStorageRootAbs, slugSegment) {
   return getSafePathUnderBase(libraryStorageRootAbs, seg);
 }
 
+/** CWE-22: create library folder only after slug is validated and confined under `libraryStorageRootAbs`. */
+export function ensureLibrarySubdirExists(libraryStorageRootAbs, slugSegment) {
+  const dir = getSafeLibrarySubdirPath(libraryStorageRootAbs, slugSegment);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** CWE-22: remove library folder subtree only when path resolves under the library root. */
+export async function removeLibrarySubdirIfExists(libraryStorageRootAbs, slugSegment) {
+  const dir = getSafeLibrarySubdirPath(libraryStorageRootAbs, slugSegment);
+  try {
+    await fs.promises.access(dir, fs.constants.F_OK);
+  } catch {
+    return;
+  }
+  await fs.promises.rm(dir, { recursive: true, force: true });
+}
+
+/** CWE-22: unlink a stored file by DB `relative_path` (verified under base, including symlinks). */
+export async function unlinkVerifiedFileUnderBase(absoluteBaseDir, userRelativeInput) {
+  const abs = getVerifiedFilePathUnderBase(absoluteBaseDir, userRelativeInput);
+  try {
+    await fs.promises.access(abs, fs.constants.F_OK);
+  } catch {
+    return;
+  }
+  await fs.promises.unlink(abs);
+}
+
+/** CWE-22: stat/open streams only on paths verified under base. */
+export async function statVerifiedFileUnderBase(absoluteBaseDir, userRelativeInput) {
+  const abs = getVerifiedFilePathUnderBase(absoluteBaseDir, userRelativeInput);
+  return fs.promises.stat(abs);
+}
+
+export function createVerifiedReadStream(absoluteBaseDir, userRelativeInput, options) {
+  const abs = getVerifiedFilePathUnderBase(absoluteBaseDir, userRelativeInput);
+  return fs.createReadStream(abs, options);
+}
+
 /**
  * After multer (or any code) produces an absolute path, ensure it stays under `storage/` root.
  */
@@ -65,6 +105,17 @@ export function assertAbsoluteUnderStorageRoot(absolutePathCandidate, storageRoo
     throw new PathTraversalError('Invalid path');
   }
   return resolved;
+}
+
+/** CWE-22: multer/upload rollback — only unlink paths already under the storage root. */
+export async function unlinkAbsoluteUnderStorageRoot(absolutePathCandidate, storageRootAbs) {
+  const abs = assertAbsoluteUnderStorageRoot(absolutePathCandidate, storageRootAbs);
+  try {
+    await fs.promises.access(abs, fs.constants.F_OK);
+  } catch {
+    return;
+  }
+  await fs.promises.unlink(abs);
 }
 
 /**
