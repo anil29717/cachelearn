@@ -195,7 +195,14 @@ export async function initDb() {
 }
 
 export async function query(sql, params) {
-  const [rows] = await pool.query(sql, params);
+  if (typeof sql !== 'string' || sql.trim() === '' || sql.includes('\0')) {
+    throw new Error('Invalid SQL statement');
+  }
+  if (params !== undefined && !Array.isArray(params)) {
+    throw new Error('Query params must be an array');
+  }
+  const bind = params ?? [];
+  const [rows] = await pool.execute(sql, bind);
   return rows;
 }
 

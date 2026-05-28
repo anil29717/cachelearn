@@ -98,10 +98,24 @@ app.use((req, res, next) => {
   next();
 });
 app.use('/api', requireBrowserOriginForMutations);
+const productionCspDirectives = {
+  defaultSrc: ["'self'"],
+  baseUri: ["'self'"],
+  frameAncestors: ["'none'"],
+  formAction: ["'self'"],
+  objectSrc: ["'none'"],
+  scriptSrc: ["'self'"],
+  styleSrc: ["'self'", "'unsafe-inline'"],
+  imgSrc: ["'self'", 'data:', 'blob:'],
+  connectSrc: ["'self'"],
+};
 app.use(
   helmet({
     crossOriginResourcePolicy: false,
-    contentSecurityPolicy: false,
+    contentSecurityPolicy:
+      process.env.NODE_ENV === 'production'
+        ? { useDefaults: true, directives: productionCspDirectives }
+        : false,
     ...(process.env.NODE_ENV === 'production'
       ? { hsts: { maxAge: 31536000, includeSubDomains: true, preload: false } }
       : {}),
@@ -115,12 +129,6 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  if (process.env.NODE_ENV === 'production') {
-    res.setHeader(
-      'Content-Security-Policy',
-      "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
-    );
-  }
   next();
 });
 

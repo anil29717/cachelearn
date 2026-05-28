@@ -21,6 +21,16 @@ function stripNullBytes(s) {
   return s.trim();
 }
 
+function assertWithinBase(baseDir, candidatePath) {
+  const base = path.resolve(baseDir);
+  const candidate = path.resolve(candidatePath);
+  const rel = path.relative(base, candidate);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new PathTraversalError('Invalid path');
+  }
+  return { base, candidate };
+}
+
 /**
  * Resolve a relative path (e.g. from DB `relative_path`) under an absolute base directory.
  * Input must not be absolute; result is guaranteed under `absoluteBaseDir` (logical resolution).
@@ -31,13 +41,8 @@ export function getSafePathUnderBase(absoluteBaseDir, userInput) {
   if (path.isAbsolute(raw)) {
     throw new PathTraversalError('Invalid path');
   }
-  const base = path.resolve(absoluteBaseDir);
-  const resolved = path.resolve(base, raw);
-  const rel = path.relative(base, resolved);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
-    throw new PathTraversalError('Invalid path');
-  }
-  return resolved;
+  const resolved = path.resolve(path.resolve(absoluteBaseDir), raw);
+  return assertWithinBase(absoluteBaseDir, resolved).candidate;
 }
 
 /**
@@ -98,13 +103,10 @@ export function createVerifiedReadStream(absoluteBaseDir, userRelativeInput, opt
 export function assertAbsoluteUnderStorageRoot(absolutePathCandidate, storageRootAbs) {
   const p = stripNullBytes(String(absolutePathCandidate ?? ''));
   if (!p) throw new PathTraversalError('Invalid path');
-  const resolved = path.resolve(p);
-  const base = path.resolve(storageRootAbs);
-  const rel = path.relative(base, resolved);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+  if (!path.isAbsolute(p)) {
     throw new PathTraversalError('Invalid path');
   }
-  return resolved;
+  return assertWithinBase(storageRootAbs, p).candidate;
 }
 
 /** CWE-22: multer/upload rollback — only unlink paths already under the storage root. */
@@ -144,12 +146,12 @@ export function resolveTlsArtifactPath(raw) {
   const s = stripNullBytes(String(raw));
   const rawRoot = process.env.HTTPS_ARTIFACT_ROOT;
   const root = rawRoot ? path.resolve(String(rawRoot).trim()) : path.resolve(process.cwd());
-  const candidate = path.isAbsolute(s) ? path.normalize(s) : path.resolve(root, s);
-  const rel = path.relative(root, candidate);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+  const candidate = path.isAbsolute(s) ? path.resolve(s) : path.resolve(root, s);
+  try {
+    return assertWithinBase(root, candidate).candidate;
+  } catch {
     return null;
   }
-  return candidate;
 }
 
 /** Alias for scanner-friendly naming */

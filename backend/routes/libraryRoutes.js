@@ -37,6 +37,22 @@ const storageRoot = path.resolve('storage', 'library');
 const storageAbsRoot = path.resolve('storage');
 fs.mkdirSync(storageRoot, { recursive: true });
 
+function parsePositiveIntParam(value) {
+  const s = String(value ?? '').trim();
+  if (!/^[1-9]\d*$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+function sanitizeDownloadName(name) {
+  const base = path.basename(String(name || 'download'));
+  const safe = base
+    .replace(/[\r\n]/g, '')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .trim();
+  return safe || 'download';
+}
+
 /** DB `relative_path` → verified absolute path under `storage/` (blocks traversal + symlink escape). */
 function resolvedStorageFilePath(relativePath) {
   return getVerifiedFilePathUnderBase(storageAbsRoot, relativePath);
@@ -159,7 +175,7 @@ function handleLibraryUpload(req, res, next) {
 async function prepareLibraryUpload(req, res, next) {
   try {
     await initDb();
-    const folderId = Number(req.params.folderId);
+    const folderId = parsePositiveIntParam(req.params.folderId);
     if (!folderId) return res.status(400).json({ error: 'Invalid folder id' });
     const folders = await query('SELECT id, slug FROM content_folders WHERE id = ?', [folderId]);
     if (!folders.length) return res.status(404).json({ error: 'Folder not found' });
@@ -319,7 +335,7 @@ router.post(
     const uploadedPath = req.file?.path;
     try {
       await initDb();
-      const folderId = Number(req.params.folderId);
+      const folderId = parsePositiveIntParam(req.params.folderId);
       if (!folderId) return res.status(400).json({ error: 'Invalid folder id' });
 
       const file = req.file;
@@ -381,7 +397,7 @@ router.post(
 router.get('/folders/:folderId/files', authMiddleware, async (req, res) => {
   try {
     await initDb();
-    const folderId = Number(req.params.folderId);
+    const folderId = parsePositiveIntParam(req.params.folderId);
     if (!folderId) return res.status(400).json({ error: 'Invalid folder id' });
     if (!(await canAccessFolder(req.user, folderId))) {
       return res.status(403).json({ error: 'Forbidden' });
@@ -404,7 +420,7 @@ router.get('/folders/:folderId/files', authMiddleware, async (req, res) => {
 router.get('/folders/:folderId/progress', authMiddleware, async (req, res) => {
   try {
     await initDb();
-    const folderId = Number(req.params.folderId);
+    const folderId = parsePositiveIntParam(req.params.folderId);
     if (!folderId) return res.status(400).json({ error: 'Invalid folder id' });
     if (!(await canAccessFolder(req.user, folderId))) {
       return res.status(403).json({ error: 'Forbidden' });
@@ -436,7 +452,7 @@ router.get('/folders/:folderId/progress', authMiddleware, async (req, res) => {
 router.get('/files/:fileId/progress', authMiddleware, async (req, res) => {
   try {
     await initDb();
-    const fileId = Number(req.params.fileId);
+    const fileId = parsePositiveIntParam(req.params.fileId);
     if (!fileId) return res.status(400).json({ error: 'Invalid file id' });
     const file = await getFileRow(fileId);
     if (!file) return res.status(404).json({ error: 'File not found' });
@@ -470,7 +486,7 @@ router.get('/files/:fileId/progress', authMiddleware, async (req, res) => {
 router.post('/files/:fileId/progress', authMiddleware, async (req, res) => {
   try {
     await initDb();
-    const fileId = Number(req.params.fileId);
+    const fileId = parsePositiveIntParam(req.params.fileId);
     if (!fileId) return res.status(400).json({ error: 'Invalid file id' });
     const file = await getFileRow(fileId);
     if (!file) return res.status(404).json({ error: 'File not found' });
@@ -566,7 +582,7 @@ router.post('/files/:fileId/progress', authMiddleware, async (req, res) => {
 router.patch('/files/:fileId', authMiddleware, requireAdmin, libraryMutationLimiter, async (req, res) => {
   try {
     await initDb();
-    const fileId = Number(req.params.fileId);
+    const fileId = parsePositiveIntParam(req.params.fileId);
     const { original_name: originalName } = parseOrThrow(fileRenameSchema, req.body || {});
     if (!fileId) return res.status(400).json({ error: 'Invalid file id' });
 
@@ -590,7 +606,7 @@ router.patch('/files/:fileId', authMiddleware, requireAdmin, libraryMutationLimi
 router.delete('/files/:fileId', authMiddleware, requireAdmin, libraryMutationLimiter, async (req, res) => {
   try {
     await initDb();
-    const fileId = Number(req.params.fileId);
+    const fileId = parsePositiveIntParam(req.params.fileId);
     if (!fileId) return res.status(400).json({ error: 'Invalid file id' });
 
     const rows = await query(
@@ -617,7 +633,7 @@ router.delete('/files/:fileId', authMiddleware, requireAdmin, libraryMutationLim
 router.get('/files/:fileId/download', authMiddleware, libraryReadLimiter, async (req, res) => {
   try {
     await initDb();
-    const fileId = Number(req.params.fileId);
+    const fileId = parsePositiveIntParam(req.params.fileId);
     if (!fileId) return res.status(400).json({ error: 'Invalid file id' });
 
     const rows = await query(
@@ -640,7 +656,7 @@ router.get('/files/:fileId/download', authMiddleware, libraryReadLimiter, async 
 
     setLibrarySecurityHeaders(res);
     res.setHeader('Content-Type', file.mime_type || 'application/octet-stream');
-    return res.download(absolutePath, file.original_name, (err) => {
+    return res.download(absolutePath, sanitizeDownloadName(file.original_name), (err) => {
       if (err && !res.headersSent) {
         console.error('Download file error', err);
         res.status(500).json({ error: 'Server error' });
@@ -655,7 +671,7 @@ router.get('/files/:fileId/download', authMiddleware, libraryReadLimiter, async 
 router.get('/files/:fileId/stream', authMiddleware, libraryReadLimiter, async (req, res) => {
   try {
     await initDb();
-    const fileId = Number(req.params.fileId);
+    const fileId = parsePositiveIntParam(req.params.fileId);
     if (!fileId) return res.status(400).json({ error: 'Invalid file id' });
 
     const rows = await query(
@@ -743,7 +759,7 @@ router.get('/files/:fileId/stream', authMiddleware, libraryReadLimiter, async (r
 router.patch('/folders/:folderId', authMiddleware, requireAdmin, async (req, res) => {
   try {
     await initDb();
-    const folderId = Number(req.params.folderId);
+    const folderId = parsePositiveIntParam(req.params.folderId);
     const { visibility } = parseOrThrow(folderVisibilitySchema, req.body || {});
     if (!folderId) return res.status(400).json({ error: 'Invalid folder id' });
     const existingRows = await query('SELECT id FROM content_folders WHERE id = ?', [folderId]);
@@ -762,7 +778,7 @@ router.patch('/folders/:folderId', authMiddleware, requireAdmin, async (req, res
 router.get('/folders/:folderId/access', authMiddleware, requireAdmin, async (req, res) => {
   try {
     await initDb();
-    const folderId = Number(req.params.folderId);
+    const folderId = parsePositiveIntParam(req.params.folderId);
     if (!folderId) return res.status(400).json({ error: 'Invalid folder id' });
     const rows = await query(
       `SELECT fa.user_id
@@ -781,7 +797,7 @@ router.get('/folders/:folderId/access', authMiddleware, requireAdmin, async (req
 router.put('/folders/:folderId/access', authMiddleware, requireAdmin, async (req, res) => {
   try {
     await initDb();
-    const folderId = Number(req.params.folderId);
+    const folderId = parsePositiveIntParam(req.params.folderId);
     const { user_ids: userIds } = parseOrThrow(folderAccessSchema, req.body || {});
     if (!folderId) return res.status(400).json({ error: 'Invalid folder id' });
     const folderRows = await query('SELECT id FROM content_folders WHERE id = ?', [folderId]);
@@ -816,7 +832,7 @@ router.put('/folders/:folderId/access', authMiddleware, requireAdmin, async (req
 router.delete('/folders/:folderId', authMiddleware, requireAdmin, libraryMutationLimiter, async (req, res) => {
   try {
     await initDb();
-    const folderId = Number(req.params.folderId);
+    const folderId = parsePositiveIntParam(req.params.folderId);
     if (!folderId) return res.status(400).json({ error: 'Invalid folder id' });
 
     const rows = await query('SELECT id, slug FROM content_folders WHERE id = ?', [folderId]);
