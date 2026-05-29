@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { ChevronRight, Folder, FolderOpen, Lock, Trash2 } from 'lucide-react';
 import { LibraryFolder } from '../../types';
+import { isNil } from '../../utils/isNil';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 
@@ -17,7 +18,7 @@ type Props = {
 
 function childrenOf(folders: LibraryFolder[], parentId: number | null) {
   return folders
-    .filter((f) => (parentId === null ? f.parent_id == null : f.parent_id === parentId))
+    .filter((f) => (parentId === null ? isNil(f.parent_id) : f.parent_id === parentId))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -152,7 +153,7 @@ export function FolderTreeNav({
   };
 
   React.useEffect(() => {
-    if (selectedId == null) return;
+    if (isNil(selectedId)) return;
     const ancestors: number[] = [];
     let cur = folders.find((f) => f.id === selectedId);
     while (cur?.parent_id != null) {
@@ -172,7 +173,7 @@ export function FolderTreeNav({
     const n = name.trim();
     if (!n) return;
     if (mode === 'sub') {
-      if (selectedId == null || !onCreateSubfolder) return;
+      if (isNil(selectedId) || !onCreateSubfolder) return;
       await onCreateSubfolder(selectedId, n);
       setExpanded((prev) => new Set(prev).add(selectedId));
     } else {
@@ -219,7 +220,7 @@ export function FolderTreeNav({
               type="button"
               variant={mode === 'sub' ? 'default' : 'outline'}
               size="sm"
-              disabled={selectedId == null}
+              disabled={isNil(selectedId)}
               onClick={() => setMode('sub')}
             >
               Subfolder

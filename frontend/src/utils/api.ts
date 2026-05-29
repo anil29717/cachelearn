@@ -117,6 +117,10 @@ export class ApiClient {
     });
   }
 
+  async getSessionConfig() {
+    return this.request<{ idle_minutes: number; jwt_expires_in: string }>('/auth/session-config');
+  }
+
   async resendVerification(email: string) {
     return this.request<{ message: string }>('/auth/resend-verification', {
       method: 'POST',

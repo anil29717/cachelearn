@@ -197,7 +197,7 @@ export function SecureLibraryVideoDialog(props: SecureLibraryVideoDialogProps) {
       }
     };
     const onDocMouseOut = (e: MouseEvent) => {
-      if (e.relatedTarget == null) setPlaybackObscured(true);
+      if (e.relatedTarget === null) setPlaybackObscured(true);
     };
     const onDocMouseOver = () => {
       if (!canClearObscured()) return;

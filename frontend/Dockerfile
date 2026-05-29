@@ -1,7 +1,7 @@
 # Same base as backend (node:20-alpine3.21) so one update path and comparable CVE posture vs bookworm-slim.
 FROM node:20-alpine3.21 AS build
 WORKDIR /app
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates && apk upgrade --no-cache
 COPY package*.json ./
 RUN npm ci
 COPY . .
@@ -10,6 +10,7 @@ RUN npm run build
 FROM node:20-alpine3.21
 WORKDIR /app
 RUN apk add --no-cache ca-certificates \
+  && apk upgrade --no-cache \
   && addgroup -g 1001 -S app && adduser -S -u 1001 -G app app \
   && npm install -g serve@14 \
   && npm cache clean --force

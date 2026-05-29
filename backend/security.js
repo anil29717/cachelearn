@@ -1,7 +1,21 @@
 import rateLimit from 'express-rate-limit';
 import ipaddr from 'ipaddr.js';
 
-export const apiLimiter = rateLimit({
+/** Set DISABLE_RATE_LIMIT=1 for AppScan / heavy local testing. Ignored when NODE_ENV=production. */
+export function isRateLimitDisabled() {
+  if (process.env.NODE_ENV === 'production') return false;
+  return String(process.env.DISABLE_RATE_LIMIT || '').trim() === '1';
+}
+
+function optionalRateLimit(options) {
+  const limiter = rateLimit(options);
+  return (req, res, next) => {
+    if (isRateLimitDisabled()) return next();
+    return limiter(req, res, next);
+  };
+}
+
+export const apiLimiter = optionalRateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
   standardHeaders: true,
@@ -10,7 +24,7 @@ export const apiLimiter = rateLimit({
 });
 
 /** Stricter cap for library uploads (large bodies). */
-export const libraryUploadLimiter = rateLimit({
+export const libraryUploadLimiter = optionalRateLimit({
   windowMs: 15 * 60 * 1000,
   max: 60,
   standardHeaders: true,
@@ -19,7 +33,7 @@ export const libraryUploadLimiter = rateLimit({
 });
 
 /** Download / stream (bandwidth-heavy). */
-export const libraryReadLimiter = rateLimit({
+export const libraryReadLimiter = optionalRateLimit({
   windowMs: 15 * 60 * 1000,
   max: 400,
   standardHeaders: true,
@@ -28,7 +42,7 @@ export const libraryReadLimiter = rateLimit({
 });
 
 /** Deletes and destructive library operations. */
-export const libraryMutationLimiter = rateLimit({
+export const libraryMutationLimiter = optionalRateLimit({
   windowMs: 15 * 60 * 1000,
   max: 120,
   standardHeaders: true,
@@ -36,7 +50,7 @@ export const libraryMutationLimiter = rateLimit({
   message: { error: 'Too many requests. Please try again later.' },
 });
 
-export const authLimiter = rateLimit({
+export const authLimiter = optionalRateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
   standardHeaders: true,

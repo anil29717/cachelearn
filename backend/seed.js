@@ -3,6 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import pool, { initDb, query } from './db.js';
+import { buildStringInClause } from './utils/sqlSafety.js';
 
 const seedStatePath = path.resolve('storage', 'seed-users.json');
 
@@ -93,8 +94,10 @@ async function removeExtraUsers() {
     console.log('SEED_KEEP_ALL=1 — skipping user cleanup');
     return;
   }
-  const placeholders = KEEP_EMAILS.map(() => '?').join(',');
-  const extra = await query(`SELECT id, email FROM users WHERE LOWER(email) NOT IN (${placeholders})`, KEEP_EMAILS);
+  const { clause, params } = buildStringInClause(KEEP_EMAILS.map((e) => e.toLowerCase()));
+  const extra = clause
+    ? await query(`SELECT id, email FROM users WHERE LOWER(email) NOT IN ${clause}`, params)
+    : await query('SELECT id, email FROM users');
   if (!extra.length) {
     console.log('No extra users to remove.');
     return;

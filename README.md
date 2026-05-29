@@ -17,7 +17,8 @@ From `backend/`: `npm run generate-cert`, then set `HTTPS_CERT_PATH` and `HTTPS_
 ## Security
 
 - **[SECURITY.md](./SECURITY.md)** — transport, cookies, reporting.
-- **[SECURITY_REMEDIATION_CHECKLIST.md](./SECURITY_REMEDIATION_CHECKLIST.md)** — remediation status vs common scanners.
+- **[SECURITY_REMEDIATION_CHECKLIST.md](./SECURITY_REMEDIATION_CHECKLIST.md)** — remediation status vs Wiz/AppScan findings.
+- **[docs/CONTAINER_SCAN_NOTES.md](./docs/CONTAINER_SCAN_NOTES.md)** — Tomcat/Spring/Netty Wiz findings (host image vs this Node app).
 
 Do not commit `.env`, `backend/storage/` uploads, or `backend/certs/*.pem` (run `npm run generate-cert` locally).
 

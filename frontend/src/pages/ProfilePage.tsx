@@ -11,9 +11,10 @@ import { SecureLibraryDocumentDialog } from '../components/library/SecureLibrary
 import { SecureLibraryVideoDialog } from '../components/library/SecureLibraryVideoDialog';
 import { ChevronRight, CheckCircle2, Circle, FileText } from 'lucide-react';
 import { Progress } from '../components/ui/progress';
+import { isNil } from '../utils/isNil';
 
 function folderBreadcrumb(folders: LibraryFolder[], folderId: number | null): LibraryFolder[] {
-  if (folderId == null) return [];
+  if (isNil(folderId)) return [];
   const byId = new Map(folders.map((f) => [f.id, f]));
   const chain: LibraryFolder[] = [];
   let cur: LibraryFolder | undefined = byId.get(folderId);
@@ -183,7 +184,7 @@ export function ProfilePage() {
         </header>
 
         <main className="flex-1 overflow-y-auto space-y-4 p-6">
-          {selectedFolderId == null ? (
+          {isNil(selectedFolderId) ? (
             <Card>
               <CardContent className="py-12 text-center text-gray-600">
                 No folders available yet. Ask an admin to add content.

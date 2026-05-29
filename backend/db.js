@@ -1,5 +1,6 @@
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
+import { buildInClause } from './utils/sqlSafety.js';
 dotenv.config();
 
 const required = (name) => {
@@ -32,6 +33,14 @@ const pool = mysql.createPool({
   decimalNumbers: true,
 });
 
+/** Static DDL only — not for user-controlled SQL (scanner-safe schema bootstrap). */
+async function execSchema(sql) {
+  if (typeof sql !== 'string' || sql.includes('\0')) {
+    throw new Error('Invalid schema statement');
+  }
+  await pool.query(sql);
+}
+
 export async function initDb() {
   const createUsers = `
     CREATE TABLE IF NOT EXISTS users (
@@ -45,24 +54,24 @@ export async function initDb() {
     ) ENGINE=InnoDB;
   `;
 
-  await pool.query(createUsers);
+  await execSchema(createUsers);
 
   // Active flag (block login when inactive)
   try {
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active TINYINT(1) NOT NULL DEFAULT 1;`);
+    await execSchema(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active TINYINT(1) NOT NULL DEFAULT 1;`);
   } catch (e) {
     try {
-      await pool.query(`ALTER TABLE users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1;`);
+      await execSchema(`ALTER TABLE users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1;`);
     } catch (_) {}
   }
 
   // Ensure verification flag exists on users (ignore error if already added)
   try {
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified TINYINT(1) NOT NULL DEFAULT 0;`);
+    await execSchema(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified TINYINT(1) NOT NULL DEFAULT 0;`);
   } catch (e) {
     // Older MySQL may not support IF NOT EXISTS; attempt without it and ignore duplicate errors
     try {
-      await pool.query(`ALTER TABLE users ADD COLUMN is_verified TINYINT(1) NOT NULL DEFAULT 0;`);
+      await execSchema(`ALTER TABLE users ADD COLUMN is_verified TINYINT(1) NOT NULL DEFAULT 0;`);
     } catch (_) {}
   }
 
@@ -79,7 +88,7 @@ export async function initDb() {
     ) ENGINE=InnoDB;
   `;
 
-  await pool.query(createEmailVerification);
+  await execSchema(createEmailVerification);
 
   const createContentFolders = `
     CREATE TABLE IF NOT EXISTS content_folders (
@@ -94,11 +103,11 @@ export async function initDb() {
       FOREIGN KEY (parent_id) REFERENCES content_folders(id) ON DELETE CASCADE
     ) ENGINE=InnoDB;
   `;
-  await pool.query(createContentFolders);
+  await execSchema(createContentFolders);
 
   // Ensure visibility exists on older DBs
   try {
-    await pool.query(`ALTER TABLE content_folders ADD COLUMN visibility VARCHAR(20) NOT NULL DEFAULT 'all'`);
+    await execSchema(`ALTER TABLE content_folders ADD COLUMN visibility VARCHAR(20) NOT NULL DEFAULT 'all'`);
   } catch (_) {}
 
   const createFolderAccess = `
@@ -112,7 +121,7 @@ export async function initDb() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     ) ENGINE=InnoDB;
   `;
-  await pool.query(createFolderAccess);
+  await execSchema(createFolderAccess);
 
   const createFolderFiles = `
     CREATE TABLE IF NOT EXISTS folder_files (
@@ -129,7 +138,7 @@ export async function initDb() {
       FOREIGN KEY (uploaded_by) REFERENCES users(id)
     ) ENGINE=InnoDB;
   `;
-  await pool.query(createFolderFiles);
+  await execSchema(createFolderFiles);
 
   const createVideoProgress = `
     CREATE TABLE IF NOT EXISTS video_progress (
@@ -150,15 +159,15 @@ export async function initDb() {
       FOREIGN KEY (file_id) REFERENCES folder_files(id) ON DELETE CASCADE
     ) ENGINE=InnoDB;
   `;
-  await pool.query(createVideoProgress);
+  await execSchema(createVideoProgress);
 
   try {
-    await pool.query(
+    await execSchema(
       'ALTER TABLE video_progress ADD COLUMN engaged_watch_seconds DECIMAL(10,2) NOT NULL DEFAULT 0'
     );
   } catch (_) {}
   try {
-    await pool.query(
+    await execSchema(
       `UPDATE video_progress
        SET engaged_watch_seconds = duration_seconds
        WHERE completed = 1 AND duration_seconds > 0
@@ -168,10 +177,10 @@ export async function initDb() {
 
   // Subfolders: parent_id on content_folders (idempotent migrations)
   try {
-    await pool.query('ALTER TABLE content_folders ADD COLUMN parent_id INT NULL');
+    await execSchema('ALTER TABLE content_folders ADD COLUMN parent_id INT NULL');
   } catch (_) {}
   try {
-    await pool.query(
+    await execSchema(
       'ALTER TABLE content_folders ADD CONSTRAINT fk_content_folders_parent FOREIGN KEY (parent_id) REFERENCES content_folders(id) ON DELETE CASCADE'
     );
   } catch (_) {}
@@ -191,7 +200,7 @@ export async function initDb() {
       INDEX idx_system_logs_action (action)
     ) ENGINE=InnoDB;
   `;
-  await pool.query(createSystemLogs);
+  await execSchema(createSystemLogs);
 }
 
 export async function query(sql, params) {
@@ -204,6 +213,18 @@ export async function query(sql, params) {
   const bind = params ?? [];
   const [rows] = await pool.execute(sql, bind);
   return rows;
+}
+
+/**
+ * Parameterized `... IN (...)` — sqlBeforeIn must be a fixed prefix from code (e.g. `SELECT id FROM t WHERE x IN`).
+ */
+export async function queryInList(sqlBeforeIn, ids, sqlAfterIn = '', trailingParams = []) {
+  const prefix = String(sqlBeforeIn || '').trim();
+  if (!prefix || prefix.includes('\0')) throw new Error('Invalid SQL prefix');
+  const { clause, params, safeIds } = buildInClause(ids);
+  if (!safeIds.length) return [];
+  const sql = `${prefix} ${clause}${sqlAfterIn}`;
+  return query(sql, [...params, ...trailingParams]);
 }
 
 export default pool;

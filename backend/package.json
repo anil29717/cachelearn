@@ -9,7 +9,8 @@
     "start": "node index.js",
     "start:https": "cross-env HTTPS_CERT_PATH=./certs/localhost-cert.pem HTTPS_KEY_PATH=./certs/localhost-key.pem node index.js",
     "generate-cert": "node scripts/generate-dev-cert.mjs",
-    "seed": "node seed.js"
+    "seed": "node seed.js",
+    "seed:demo": "node scripts/seed-demo-hardcoded.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

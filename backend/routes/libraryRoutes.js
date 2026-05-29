@@ -2,7 +2,9 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import multer from 'multer';
-import { initDb, query } from '../db.js';
+import { initDb, query, queryInList } from '../db.js';
+import { assertPositiveIntIds } from '../utils/sqlSafety.js';
+import crypto from 'crypto';
 import { authMiddleware } from '../middleware/auth.js';
 import { logEvent } from '../logger.js';
 import {
@@ -144,8 +146,9 @@ const upload = multer({
     filename: (req, file, cb) => {
       const ext = path.extname(file.originalname || '').toLowerCase();
       const safeBase = sanitizeBaseName(file.originalname);
-      const slug = req.libraryFolderSlug || 'upload';
-      cb(null, `${slug}__${Date.now()}__${safeBase}${ext}`);
+      const slug = String(req.libraryFolderSlug || 'upload').replace(/[^a-z0-9_-]/gi, '').slice(0, 80) || 'upload';
+      const nonce = crypto.randomBytes(8).toString('hex');
+      cb(null, `${slug}__${Date.now()}__${nonce}__${safeBase}${ext}`);
     },
   }),
   fileFilter: (_req, file, cb) => {
@@ -198,17 +201,13 @@ async function prepareLibraryUpload(req, res, next) {
 
 async function getSubtreeFolderIds(rootId) {
   const ids = [rootId];
-  let frontier = [rootId];
+  let frontier = assertPositiveIntIds([rootId]);
   while (frontier.length) {
-    const placeholders = frontier.map(() => '?').join(',');
-    const kids = await query(
-      `SELECT id FROM content_folders WHERE parent_id IN (${placeholders})`,
-      frontier
-    );
-    frontier = kids.map((k) => k.id);
+    const kids = await queryInList('SELECT id FROM content_folders WHERE parent_id IN', frontier);
+    frontier = assertPositiveIntIds(kids.map((k) => k.id));
     ids.push(...frontier);
   }
-  return ids;
+  return assertPositiveIntIds(ids);
 }
 
 async function getFileRow(fileId) {
@@ -721,11 +720,21 @@ router.get('/files/:fileId/stream', authMiddleware, libraryReadLimiter, async (r
       return;
     }
 
-    const parts = range.replace(/bytes=/, '').split('-');
-    const start = Number(parts[0]);
-    const end = parts[1] ? Number(parts[1]) : fileSize - 1;
+    const rangeMatch = /^bytes=(\d*)-(\d*)$/i.exec(String(range).trim());
+    if (!rangeMatch) {
+      return res.status(416).json({ error: 'Invalid range' });
+    }
+    const start = rangeMatch[1] === '' ? 0 : Number(rangeMatch[1]);
+    const end = rangeMatch[2] === '' ? fileSize - 1 : Number(rangeMatch[2]);
 
-    if (Number.isNaN(start) || Number.isNaN(end) || start > end || end >= fileSize) {
+    if (
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(end) ||
+      start < 0 ||
+      end < 0 ||
+      start > end ||
+      end >= fileSize
+    ) {
       return res.status(416).json({ error: 'Invalid range' });
     }
 
@@ -803,16 +812,16 @@ router.put('/folders/:folderId/access', authMiddleware, requireAdmin, async (req
     const folderRows = await query('SELECT id FROM content_folders WHERE id = ?', [folderId]);
     if (!folderRows.length) return res.status(404).json({ error: 'Folder not found' });
 
-    const requested = [...new Set(userIds.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0))];
+    const requested = assertPositiveIntIds(userIds);
     if (!requested.length) {
       await query('DELETE FROM folder_access WHERE folder_id = ?', [folderId]);
       return res.json({ success: true, user_ids: [] });
     }
 
-    const placeholders = requested.map(() => '?').join(',');
-    const empRows = await query(
-      `SELECT id FROM users WHERE id IN (${placeholders}) AND role = 'employee'`,
-      requested
+    const empRows = await queryInList(
+      'SELECT id FROM users WHERE id IN',
+      requested,
+      " AND role = 'employee'"
     );
     const normalized = empRows.map((r) => r.id);
 
@@ -839,9 +848,8 @@ router.delete('/folders/:folderId', authMiddleware, requireAdmin, libraryMutatio
     if (!rows.length) return res.status(404).json({ error: 'Folder not found' });
 
     const subtreeIds = await getSubtreeFolderIds(folderId);
-    const idPlaceholders = subtreeIds.map(() => '?').join(',');
-    const fileRows = await query(
-      `SELECT relative_path FROM folder_files WHERE folder_id IN (${idPlaceholders})`,
+    const fileRows = await queryInList(
+      'SELECT relative_path FROM folder_files WHERE folder_id IN',
       subtreeIds
     );
     for (const fr of fileRows) {
@@ -852,9 +860,10 @@ router.delete('/folders/:folderId', authMiddleware, requireAdmin, libraryMutatio
       }
     }
 
-    const slugRows = await query(
-      `SELECT slug FROM content_folders WHERE id IN (${idPlaceholders}) ORDER BY LENGTH(slug) DESC`,
-      subtreeIds
+    const slugRows = await queryInList(
+      'SELECT slug FROM content_folders WHERE id IN',
+      subtreeIds,
+      ' ORDER BY LENGTH(slug) DESC'
     );
     await query('DELETE FROM content_folders WHERE id = ?', [folderId]);
     for (const { slug } of slugRows) {

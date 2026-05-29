@@ -12,12 +12,12 @@ router.put('/profile', authMiddleware, async (req, res) => {
   try {
     await initDb();
     const { name, avatar_url } = parseOrThrow(updateProfileSchema, req.body || {});
-    const fields = [];
-    const params = [];
-    if (name !== undefined) { fields.push('name = ?'); params.push(name); }
-    if (avatar_url !== undefined) { fields.push('avatar_url = ?'); params.push(avatar_url || null); }
-    params.push(req.user.id);
-    await query(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, params);
+    if (name !== undefined) {
+      await query('UPDATE users SET name = ? WHERE id = ?', [name, req.user.id]);
+    }
+    if (avatar_url !== undefined) {
+      await query('UPDATE users SET avatar_url = ? WHERE id = ?', [avatar_url || null, req.user.id]);
+    }
     const rows = await query('SELECT id, email, name, role, avatar_url, created_at FROM users WHERE id = ?', [req.user.id]);
     res.set('Cache-Control', 'private, no-store');
     return res.json({ profile: rows[0] });

@@ -7,10 +7,9 @@ import { authMiddleware, COOKIE_NAME } from '../middleware/auth.js';
 import { logEvent } from '../logger.js';
 import { authLimiter } from '../security.js';
 import { loginSchema, parseOrThrow } from '../validation.js';
+import { getJwtExpiresIn, getJwtMaxAgeMs, getSessionIdleMinutes } from '../config/session.js';
 
 const router = express.Router();
-
-const JWT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Not a user credential — generated once at startup so compare() runs for unknown emails. */
 const BCRYPT_DUMMY_HASH = bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), 10);
@@ -20,7 +19,7 @@ function signToken(payload) {
   if (!secret || String(secret).trim() === '') {
     throw new Error('JWT secret not configured');
   }
-  return jwt.sign(payload, secret, { expiresIn: '7d', algorithm: 'HS256' });
+  return jwt.sign(payload, secret, { expiresIn: getJwtExpiresIn(), algorithm: 'HS256' });
 }
 
 function setAuthCookie(res, token) {
@@ -30,7 +29,7 @@ function setAuthCookie(res, token) {
     httpOnly: true,
     secure,
     sameSite,
-    maxAge: JWT_MAX_AGE_MS,
+    maxAge: getJwtMaxAgeMs(),
     path: '/',
   });
 }
@@ -105,6 +104,14 @@ router.post('/login', authLimiter, async (req, res) => {
 router.post('/logout', (_req, res) => {
   clearAuthCookie(res);
   return res.json({ success: true });
+});
+
+router.get('/session-config', (_req, res) => {
+  res.set('Cache-Control', 'public, max-age=300');
+  return res.json({
+    idle_minutes: getSessionIdleMinutes(),
+    jwt_expires_in: getJwtExpiresIn(),
+  });
 });
 
 router.get('/profile', authMiddleware, async (req, res) => {

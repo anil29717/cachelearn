@@ -18,11 +18,12 @@ import { Bar, BarChart, CartesianGrid, XAxis } from 'recharts';
 import { Switch } from '../components/ui/switch';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Checkbox } from '../components/ui/checkbox';
+import { isNil } from '../utils/isNil';
 
 const ADMIN_LOGS_PAGE_SIZE = 50;
 
 function folderBreadcrumb(folders: LibraryFolder[], folderId: number | null): LibraryFolder[] {
-  if (folderId == null) return [];
+  if (isNil(folderId)) return [];
   const byId = new Map(folders.map((f) => [f.id, f]));
   const chain: LibraryFolder[] = [];
   let cur: LibraryFolder | undefined = byId.get(folderId);
@@ -253,7 +254,7 @@ export function AdminDashboard() {
     () => (selectedFolderId ? folders.find((f) => f.id === selectedFolderId) || null : null),
     [folders, selectedFolderId]
   );
-  const rootFolders = useMemo(() => folders.filter((f) => f.parent_id == null), [folders]);
+  const rootFolders = useMemo(() => folders.filter((f) => isNil(f.parent_id)), [folders]);
   const uploadSubfolders = useMemo(
     () => folders.filter((f) => f.parent_id === uploadRootId),
     [folders, uploadRootId]
@@ -269,13 +270,13 @@ export function AdminDashboard() {
       setProgressEmployeeId(null);
       return;
     }
-    if (progressEmployeeId == null || !employees.some((e) => e.id === progressEmployeeId)) {
+    if (isNil(progressEmployeeId) || !employees.some((e) => e.id === progressEmployeeId)) {
       setProgressEmployeeId(employees[0].id);
     }
   }, [employees, progressEmployeeId]);
 
   useEffect(() => {
-    if (activeSection !== 'progress' || progressEmployeeId == null) return;
+    if (activeSection !== 'progress' || isNil(progressEmployeeId)) return;
     loadEmployeeProgress(progressEmployeeId);
   }, [activeSection, progressEmployeeId, loadEmployeeProgress]);
 
@@ -325,7 +326,7 @@ export function AdminDashboard() {
   }, [selectedFolderId, selectedFolder?.visibility, users]);
 
   useEffect(() => {
-    if (uploadRootId == null && rootFolders.length) {
+    if (isNil(uploadRootId) && rootFolders.length) {
       setUploadRootId(rootFolders[0].id);
     }
   }, [uploadRootId, rootFolders]);
@@ -712,7 +713,7 @@ export function AdminDashboard() {
                   <Input
                     type="file"
                     onChange={onUpload}
-                    disabled={uploading || uploadRootId == null}
+                    disabled={uploading || isNil(uploadRootId)}
                     className="cursor-pointer"
                   />
                   <p className="mt-1 text-xs text-gray-500">
@@ -1042,7 +1043,7 @@ export function AdminDashboard() {
             </Card>
           )}
 
-          {activeSection === 'content' && (selectedFolderId == null ? (
+          {activeSection === 'content' && (isNil(selectedFolderId) ? (
             <Card>
               <CardContent className="py-12 text-center text-gray-600">
                 Select a folder from the Upload or Folders section to manage content.
@@ -1350,7 +1351,7 @@ export function AdminDashboard() {
           description="This removes the folder, all subfolders, and every file inside. This cannot be undone."
           confirmLabel="Delete folder"
           onConfirm={async () => {
-            if (pendingFolderDeleteId == null) return;
+            if (isNil(pendingFolderDeleteId)) return;
             const folderId = pendingFolderDeleteId;
             try {
               await apiClient.deleteFolder(folderId);

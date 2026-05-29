@@ -17,7 +17,14 @@ export function authMiddleware(req, res, next) {
     if (!secret || String(secret).trim() === '') {
       return res.status(500).json({ error: 'Server configuration error' });
     }
-    req.user = jwt.verify(token, secret, { algorithms: ['HS256'] });
+    const payload = jwt.verify(token, secret, { algorithms: ['HS256'] });
+    const id = Number(payload?.id);
+    const role = String(payload?.role || '');
+    const email = String(payload?.email || '');
+    if (!Number.isSafeInteger(id) || id <= 0 || !email || !['admin', 'employee'].includes(role)) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    req.user = { id, email, role };
     next();
   } catch {
     return res.status(401).json({ error: 'Invalid token' });

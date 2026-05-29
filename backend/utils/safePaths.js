@@ -41,7 +41,11 @@ export function getSafePathUnderBase(absoluteBaseDir, userInput) {
   if (path.isAbsolute(raw)) {
     throw new PathTraversalError('Invalid path');
   }
-  const resolved = path.resolve(path.resolve(absoluteBaseDir), raw);
+  const segments = raw.split(/[/\\]+/).filter(Boolean);
+  if (segments.some((seg) => seg === '.' || seg === '..')) {
+    throw new PathTraversalError('Invalid path');
+  }
+  const resolved = path.resolve(path.resolve(absoluteBaseDir), ...segments);
   return assertWithinBase(absoluteBaseDir, resolved).candidate;
 }
 
