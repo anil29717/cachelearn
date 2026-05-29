@@ -12,6 +12,7 @@ import { SecureLibraryVideoDialog } from '../components/library/SecureLibraryVid
 import { ChevronRight, CheckCircle2, Circle, FileText } from 'lucide-react';
 import { Progress } from '../components/ui/progress';
 import { isNil } from '../utils/isNil';
+import { sanitizeDisplayName } from '../utils/safeDisplay';
 
 function folderBreadcrumb(folders: LibraryFolder[], folderId: number | null): LibraryFolder[] {
   if (isNil(folderId)) return [];
@@ -201,7 +202,7 @@ export function ProfilePage() {
                       className={`rounded px-1 hover:text-red-700 ${i === breadcrumb.length - 1 ? 'font-semibold text-gray-900' : ''}`}
                       onClick={() => onSelectFolder(seg.id)}
                     >
-                      {seg.name}
+                      {sanitizeDisplayName(seg.name, 120)}
                     </button>
                   </React.Fragment>
                 ))}
@@ -211,7 +212,7 @@ export function ProfilePage() {
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">
                     <FileText className="h-5 w-5 text-red-600" />
-                    Files in “{breadcrumb[breadcrumb.length - 1]?.name ?? 'folder'}”
+                    Files in “{sanitizeDisplayName(breadcrumb[breadcrumb.length - 1]?.name, 120) || 'folder'}”
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
@@ -232,7 +233,7 @@ export function ProfilePage() {
                             <FileText className="mt-0.5 h-5 w-5 shrink-0 text-red-500" />
                           )}
                           <div className="min-w-0 flex-1">
-                            <p className="truncate font-medium text-gray-900">{f.original_name}</p>
+                            <p className="truncate font-medium text-gray-900">{sanitizeDisplayName(f.original_name, 255)}</p>
                             <p className="text-xs text-gray-500">
                               {(f.file_size / 1024 / 1024).toFixed(2)} MB
                               {f.mime_type.startsWith('video/') && (

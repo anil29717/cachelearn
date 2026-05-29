@@ -19,6 +19,7 @@ import { Switch } from '../components/ui/switch';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Checkbox } from '../components/ui/checkbox';
 import { isNil } from '../utils/isNil';
+import { sanitizeDisplayName } from '../utils/safeDisplay';
 
 const ADMIN_LOGS_PAGE_SIZE = 50;
 
@@ -36,7 +37,7 @@ function folderBreadcrumb(folders: LibraryFolder[], folderId: number | null): Li
 
 function folderFullPath(folders: LibraryFolder[], folderId: number): string {
   return folderBreadcrumb(folders, folderId)
-    .map((f) => f.name)
+    .map((f) => sanitizeDisplayName(f.name, 120))
     .join(' / ');
 }
 
@@ -683,7 +684,7 @@ export function AdminDashboard() {
                     <option value="">Choose root folder</option>
                     {rootFolders.map((f) => (
                       <option key={f.id} value={f.id}>
-                        {f.name}
+                        {sanitizeDisplayName(f.name, 120)}
                       </option>
                     ))}
                   </select>
@@ -699,7 +700,7 @@ export function AdminDashboard() {
                     <option value="">Auto use "Other"</option>
                     {uploadSubfolders.map((f) => (
                       <option key={f.id} value={f.id}>
-                        {f.name}
+                        {sanitizeDisplayName(f.name, 120)}
                       </option>
                     ))}
                     <option value="__other__">Other (auto create/use)</option>
@@ -1095,7 +1096,7 @@ export function AdminDashboard() {
                       className={`rounded px-1 hover:text-red-700 ${i === breadcrumb.length - 1 ? 'font-semibold text-gray-900' : ''}`}
                       onClick={() => onSelectFolder(seg.id)}
                     >
-                      {seg.name}
+                      {sanitizeDisplayName(seg.name, 120)}
                     </button>
                   </React.Fragment>
                 ))}
@@ -1105,7 +1106,7 @@ export function AdminDashboard() {
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">
                     <FileText className="h-5 w-5 text-red-600" />
-                    Files in “{breadcrumb[breadcrumb.length - 1]?.name ?? 'folder'}”
+                    Files in “{sanitizeDisplayName(breadcrumb[breadcrumb.length - 1]?.name, 120) || 'folder'}”
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">

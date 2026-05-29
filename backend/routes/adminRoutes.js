@@ -4,6 +4,7 @@ import pool, { initDb, query } from '../db.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { logEvent } from '../logger.js';
 import { createEmployeeSchema, parseOrThrow } from '../validation.js';
+import { sanitizeDisplayName } from '../utils/safeDisplay.js';
 
 const router = express.Router();
 
@@ -317,7 +318,11 @@ router.get('/summary', authMiddleware, requireAdmin, async (_req, res) => {
       summary: {
         total_employees: Number(employeesCount?.c || 0),
         total_files: Number(filesCount?.c || 0),
-        recent_uploads: recentUploads,
+        recent_uploads: recentUploads.map((row) => ({
+          ...row,
+          original_name: sanitizeDisplayName(row.original_name, 255),
+          folder_name: sanitizeDisplayName(row.folder_name, 120),
+        })),
       },
     });
   } catch (err) {

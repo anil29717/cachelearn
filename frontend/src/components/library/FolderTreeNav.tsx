@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { ChevronRight, Folder, FolderOpen, Lock, Trash2 } from 'lucide-react';
 import { LibraryFolder } from '../../types';
 import { isNil } from '../../utils/isNil';
+import { sanitizeDisplayName } from '../../utils/safeDisplay';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 
@@ -75,7 +76,7 @@ function TreeRow({
           ) : (
             <Folder className="h-4 w-4 shrink-0 text-red-500" />
           )}
-          <span className="truncate font-medium">{folder.name}</span>
+          <span className="truncate font-medium">{sanitizeDisplayName(folder.name, 120)}</span>
           {String(folder.visibility || 'all') === 'restricted' && (
             <Lock className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-label="Restricted" />
           )}

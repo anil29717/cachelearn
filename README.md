@@ -6,7 +6,10 @@ Internal training / learning platform (React + Node + MySQL).
 
 1. **Database** — MySQL 8.x, create a database (e.g. `course_platform`).
 2. **Backend** — `cd backend && cp .env.example .env`, set `DB_*`, `JWT_SECRET`, `FRONTEND_URL`, `BACKEND_URL`. Run `npm install`, `npm run seed`, `npm run dev`.
-3. **Frontend** — `cd frontend && npm install && npm run dev` (default [http://localhost:4000](http://localhost:4000)).
+3. **Frontend** — `cd frontend && npm install && npm run dev` (default [https://localhost:4000](https://localhost:4000)).
+
+**Both at once (repo root):** `npm install && npm run dev` — starts backend on `:8080` and frontend on `:4000`.  
+If you only run the frontend, Vite will log `ECONNREFUSED` on `/api/*` until the backend is up.
 
 API routes are proxied from the dev server as same-origin `/api` (see `frontend/vite.config.ts`).
 

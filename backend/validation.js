@@ -1,4 +1,16 @@
 import { z } from 'zod';
+import { isSafeDisplayName, sanitizeDisplayName } from './utils/safeDisplay.js';
+
+const displayNameSchema = (maxLen, label = 'Name') =>
+  z
+    .string()
+    .trim()
+    .min(1, `${label} is required`)
+    .max(maxLen, `${label} is too long`)
+    .refine(isSafeDisplayName, {
+      message: `${label} cannot contain HTML or script characters (<, >, &, tags)`,
+    })
+    .transform((s) => sanitizeDisplayName(s, maxLen));
 
 export const emailSchema = z.string().trim().email('Invalid email').transform((value) => value.toLowerCase());
 
@@ -16,12 +28,12 @@ export const createEmployeeSchema = z.object({
     .regex(/[A-Z]/, 'Password must include an uppercase letter')
     .regex(/[a-z]/, 'Password must include a lowercase letter')
     .regex(/[0-9]/, 'Password must include a number'),
-  name: z.string().trim().min(2, 'Name is required').max(120, 'Name is too long'),
+  name: displayNameSchema(120, 'Name'),
 });
 
 export const updateProfileSchema = z
   .object({
-    name: z.string().trim().min(2, 'Name is too short').max(120, 'Name is too long').optional(),
+    name: displayNameSchema(120, 'Name').optional(),
     avatar_url: z.union([z.string().trim().url('avatar_url must be a valid URL'), z.literal('')]).optional(),
   })
   .refine((value) => value.name !== undefined || value.avatar_url !== undefined, {
@@ -47,7 +59,7 @@ export const changePasswordSchema = z
   });
 
 export const createFolderSchema = z.object({
-  name: z.string().trim().min(1, 'Folder name is required').max(120, 'Folder name is too long'),
+  name: displayNameSchema(120, 'Folder name'),
   parent_id: z.coerce.number().int().positive().nullable().optional(),
 });
 
@@ -56,12 +68,7 @@ export const folderVisibilitySchema = z.object({
 });
 
 export const fileRenameSchema = z.object({
-  original_name: z
-    .string()
-    .trim()
-    .max(255, 'original_name is too long')
-    .transform((s) => s.replace(/[<>]/g, ''))
-    .pipe(z.string().min(1, 'original_name is required')),
+  original_name: displayNameSchema(255, 'File name'),
 });
 
 export const folderAccessSchema = z.object({

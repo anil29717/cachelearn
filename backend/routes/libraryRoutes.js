@@ -32,6 +32,7 @@ import {
   parseOrThrow,
   videoProgressUpdateSchema,
 } from '../validation.js';
+import { isSafeDisplayName, sanitizeDisplayName } from '../utils/safeDisplay.js';
 
 const router = express.Router();
 
@@ -58,6 +59,24 @@ function sanitizeDownloadName(name) {
 /** DB `relative_path` → verified absolute path under `storage/` (blocks traversal + symlink escape). */
 function resolvedStorageFilePath(relativePath) {
   return getVerifiedFilePathUnderBase(storageAbsRoot, relativePath);
+}
+
+function mapFolderForClient(row) {
+  if (!row) return row;
+  return { ...row, name: sanitizeDisplayName(row.name, 120) };
+}
+
+function mapFileForClient(row) {
+  if (!row) return row;
+  return {
+    ...row,
+    original_name: sanitizeDisplayName(row.original_name, 255),
+    folder_name: row.folder_name != null ? sanitizeDisplayName(row.folder_name, 120) : row.folder_name,
+  };
+}
+
+function mapFoldersForClient(rows) {
+  return rows.map(mapFolderForClient);
 }
 
 const MAX_LIBRARY_UPLOAD_BYTES = 512 * 1024 * 1024;
@@ -316,7 +335,7 @@ router.get('/folders', authMiddleware, async (req, res) => {
       }
     }
     const folders = all.filter((f) => allowedIds.has(f.id));
-    return res.json({ folders });
+    return res.json({ folders: mapFoldersForClient(folders) });
   } catch (err) {
     console.error('List folders error', err);
     return res.status(500).json({ error: 'Server error' });
@@ -339,6 +358,18 @@ router.post(
 
       const file = req.file;
       if (!file) return res.status(400).json({ error: 'No file uploaded' });
+
+      const safeOriginalName = sanitizeDisplayName(file.originalname, 255);
+      if (!safeOriginalName || !isSafeDisplayName(file.originalname)) {
+        if (uploadedPath) {
+          try {
+            await unlinkAbsoluteUnderStorageRoot(uploadedPath, storageAbsRoot);
+          } catch (_) {
+            /* ignore */
+          }
+        }
+        return res.status(400).json({ error: 'Invalid file name' });
+      }
 
       const storedName = file.filename;
       let absolutePath;
@@ -409,7 +440,7 @@ router.get('/folders/:folderId/files', authMiddleware, async (req, res) => {
        ORDER BY created_at DESC`,
       [folderId]
     );
-    return res.json({ files });
+    return res.json({ files: files.map(mapFileForClient) });
   } catch (err) {
     console.error('List files error', err);
     return res.status(500).json({ error: 'Server error' });
@@ -594,7 +625,7 @@ router.patch('/files/:fileId', authMiddleware, requireAdmin, libraryMutationLimi
        FROM folder_files WHERE id = ?`,
       [fileId]
     );
-    return res.json({ file: updated[0] });
+    return res.json({ file: mapFileForClient(updated[0]) });
   } catch (err) {
     if (err?.statusCode) return res.status(err.statusCode).json({ error: err.message });
     console.error('Update file error', err);
@@ -775,7 +806,7 @@ router.patch('/folders/:folderId', authMiddleware, requireAdmin, async (req, res
     if (!existingRows.length) return res.status(404).json({ error: 'Folder not found' });
     await query('UPDATE content_folders SET visibility = ? WHERE id = ?', [visibility, folderId]);
     const rows = await query('SELECT id, name, slug, parent_id, visibility FROM content_folders WHERE id = ?', [folderId]);
-    return res.json({ folder: rows[0] });
+    return res.json({ folder: mapFolderForClient(rows[0]) });
   } catch (err) {
     if (err?.statusCode) return res.status(err.statusCode).json({ error: err.message });
     console.error('Update folder visibility error', err);
