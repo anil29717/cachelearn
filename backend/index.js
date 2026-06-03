@@ -20,10 +20,12 @@ import {
   isLocalInitRequest,
   trustedNetworkMiddleware,
   requireBrowserOriginForMutations,
+  warnIfRateLimitDisabled,
 } from './security.js';
 import { resolveTlsArtifactPath } from './utils/safePaths.js';
 
 dotenv.config();
+warnIfRateLimitDisabled();
 
 if (process.env.NODE_ENV === 'production') {
   const fe = String(process.env.FRONTEND_URL || '').trim();

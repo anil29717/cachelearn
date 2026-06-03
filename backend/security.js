@@ -1,10 +1,21 @@
 import rateLimit from 'express-rate-limit';
 import ipaddr from 'ipaddr.js';
 
-/** Set DISABLE_RATE_LIMIT=1 for AppScan / heavy local testing. Ignored when NODE_ENV=production. */
+/**
+ * Set DISABLE_RATE_LIMIT=1 to skip all API rate limits (automation / AppScan / load tests).
+ * Works in any NODE_ENV when explicitly set — remove before public production hardening.
+ */
 export function isRateLimitDisabled() {
-  if (process.env.NODE_ENV === 'production') return false;
   return String(process.env.DISABLE_RATE_LIMIT || '').trim() === '1';
+}
+
+let rateLimitWarned = false;
+export function warnIfRateLimitDisabled() {
+  if (!isRateLimitDisabled() || rateLimitWarned) return;
+  rateLimitWarned = true;
+  console.warn(
+    '[security] DISABLE_RATE_LIMIT=1 — API rate limiting is OFF (automation/testing only). Unset for production.'
+  );
 }
 
 function optionalRateLimit(options) {
