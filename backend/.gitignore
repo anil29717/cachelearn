@@ -20,6 +20,12 @@ dist/
 build/
 # Uploaded library files and local data (never commit)
 storage/
+storage/seed-users.json
+
+# Legacy / local demo seed copies (use scripts/seed-demo.mjs from repo)
+scripts/seed-demo-hardcoded.mjs
+scripts/*-secrets*.mjs
+scripts/*-local.mjs
 coverage/
 
 # Local dev TLS — create with: npm run generate-cert (never commit private keys)

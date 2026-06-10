@@ -2,6 +2,22 @@
 .env
 .env.local
 .env.*.local
+**/.env
+**/.env.local
+**/.env.*.local
+!**/.env.example
+!**/.env.*.example
+
+# Scripts / data that handle passwords or secrets (local copies only)
+backend/scripts/seed-demo-hardcoded.mjs
+backend/scripts/*-secrets*.mjs
+backend/scripts/*-local.mjs
+backend/storage/seed-users.json
+
+# TLS private keys and local uploads
+**/*.pem
+backend/storage/
+
 # Markdown — not tracked (except policy/docs we want in repo)
 *.md
 !**/README.md
