@@ -1,6 +1,7 @@
 /**
- * DEV/TEST ONLY — hardcoded demo users. Does not delete other users.
- *   cd backend && node scripts/seed-demo-hardcoded.mjs
+ * DEV/TEST ONLY — demo users from environment (passwords never in source).
+ *   Set SEED_ADMIN_PASSWORD and SEED_EMPLOYEE_PASSWORD in backend/.env, then:
+ *   cd backend && npm run seed:demo
  */
 import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
@@ -8,9 +9,27 @@ import { initDb, query } from '../db.js';
 
 dotenv.config();
 
+function requireEnv(name) {
+  const value = process.env[name];
+  if (value && String(value).trim()) return String(value).trim();
+  throw new Error(
+    `Set ${name} in backend/.env (or the environment). Passwords are not stored in this repo.`
+  );
+}
+
 const USERS = [
-  { email: 'admin.demo@test.local', name: 'Demo Admin', role: 'admin', password: 'Admin@123' },
-  { email: 'employee.demo@test.local', name: 'Demo Employee', role: 'employee', password: 'Employee@123' },
+  {
+    email: 'admin.demo@test.local',
+    name: 'Demo Admin',
+    role: 'admin',
+    password: requireEnv('SEED_ADMIN_PASSWORD'),
+  },
+  {
+    email: 'employee.demo@test.local',
+    name: 'Demo Employee',
+    role: 'employee',
+    password: requireEnv('SEED_EMPLOYEE_PASSWORD'),
+  },
 ];
 
 async function upsert({ email, name, role, password }) {
@@ -34,10 +53,11 @@ async function upsert({ email, name, role, password }) {
 async function main() {
   await initDb();
   for (const u of USERS) await upsert(u);
-  console.log('\nLogins:\n  admin.demo@test.local / Admin@123\n  employee.demo@test.local / Employee@123\n');
+  console.log('\nDemo users ready (passwords from SEED_* env vars, not logged):\n');
+  for (const { email, role } of USERS) console.log(`  ${role}: ${email}`);
 }
 
 main().catch((e) => {
-  console.error(e);
+  console.error(e.message || e);
   process.exit(1);
 });
