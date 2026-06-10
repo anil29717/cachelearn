@@ -1,4 +1,10 @@
 import { AdminVideoProgress, LibraryFile, LibraryFolder, VideoProgress } from '../types';
+import { assertPositiveFileId, assertSafeApiEndpoint } from './safeApiPath';
+
+function safeLibraryFolderPath(folderId: number, suffix: string): string {
+  const id = assertPositiveFileId(folderId);
+  return assertSafeApiEndpoint(`/library/folders/${id}${suffix}`);
+}
 
 // In the browser during `vite` dev, always use same-origin `/api` so the Vite proxy runs and
 // httpOnly session cookies work. (Pointing fetch at http://localhost:8080 breaks cookies across ports.)
@@ -46,7 +52,8 @@ export class ApiClient {
 
     let response: Response;
     try {
-      response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      const safeEndpoint = assertSafeApiEndpoint(endpoint);
+      response = await fetch(`${API_BASE_URL}${safeEndpoint}`, {
         ...options,
         credentials: 'include',
         headers,
@@ -272,7 +279,7 @@ export class ApiClient {
 
     return new Promise<{ file: LibraryFile }>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', `${API_BASE_URL}/library/folders/${folderId}/files`);
+      xhr.open('POST', `${API_BASE_URL}${safeLibraryFolderPath(folderId, '/files')}`);
       xhr.withCredentials = true;
       if (this.accessToken) {
         xhr.setRequestHeader('Authorization', `Bearer ${this.accessToken}`);

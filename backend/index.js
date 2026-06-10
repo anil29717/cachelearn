@@ -77,8 +77,12 @@ function productionCorsOrigin(origin, callback) {
   return callback(new Error('Not allowed by CORS'));
 }
 
+const corsOrigin = process.env.NODE_ENV === 'production' ? productionCorsOrigin : devOrigins;
+if (corsOrigin === '*') {
+  throw new Error('CORS wildcard origin is not permitted');
+}
 const corsOptions = {
-  origin: process.env.NODE_ENV === 'production' ? productionCorsOrigin : devOrigins,
+  origin: corsOrigin,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -134,17 +138,18 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get('/health', (req, res) => {
+app.get('/health', apiLimiter, (req, res) => {
   res.json({ ok: true });
 });
 
+// Per-route limits: authLimiter on POST /auth/login; library* in libraryRoutes.js
 app.use(API_MOUNTS.AUTH, authRouter);
 app.use(API_MOUNTS.ADMIN, adminRouter);
 app.use(API_MOUNTS.USERS, usersRouter);
 app.use(API_MOUNTS.LIBRARY, libraryRouter);
 
 // Initialize DB on demand for local development only
-app.post('/api/init-db', async (_req, res) => {
+app.post('/api/init-db', apiLimiter, async (_req, res) => {
   if (process.env.NODE_ENV === 'production') {
     return res.status(404).json({ error: 'Not found' });
   }

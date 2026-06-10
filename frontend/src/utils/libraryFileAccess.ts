@@ -1,12 +1,16 @@
+import { assertPositiveFileId, assertSafeApiEndpoint } from './safeApiPath';
+
 /**
  * Open or download a library file using the session cookie (same-origin /api proxy).
  * Do not put JWTs in localStorage — auth is httpOnly cookie + credentials.
  */
 export async function openLibraryFile(fileId: number, filename: string, mimeType: string) {
-  const path =
+  const id = assertPositiveFileId(fileId);
+  const path = assertSafeApiEndpoint(
     mimeType.startsWith('video/') && !mimeType.includes('quicktime')
-      ? `/api/library/files/${fileId}/stream`
-      : `/api/library/files/${fileId}/download`;
+      ? `/api/library/files/${id}/stream`
+      : `/api/library/files/${id}/download`
+  );
   const res = await fetch(path, {
     credentials: 'include',
   });

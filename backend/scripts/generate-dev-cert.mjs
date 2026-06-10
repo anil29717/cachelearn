@@ -5,9 +5,11 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import selfsigned from 'selfsigned';
+import { getSafePathUnderBase } from '../utils/safePaths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const certsDir = path.join(__dirname, '..', 'certs');
+const backendRoot = path.resolve(__dirname, '..');
+const certsDir = getSafePathUnderBase(backendRoot, 'certs');
 
 async function main() {
   fs.mkdirSync(certsDir, { recursive: true });
@@ -33,8 +35,8 @@ async function main() {
       },
     ],
   });
-  const keyFile = path.join(certsDir, 'localhost-key.pem');
-  const certFile = path.join(certsDir, 'localhost-cert.pem');
+  const keyFile = getSafePathUnderBase(certsDir, 'localhost-key.pem');
+  const certFile = getSafePathUnderBase(certsDir, 'localhost-cert.pem');
   fs.writeFileSync(keyFile, pems.private, { mode: 0o600 });
   fs.writeFileSync(certFile, pems.cert, { mode: 0o644 });
   console.log('Created:', certFile, keyFile);

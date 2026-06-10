@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { secureRandomFloat } from '../utils/secureRandom';
 
 type Slide = {
   title: string;
@@ -76,15 +77,15 @@ export default function HeroCarousel() {
     const mouseInfluence = 180;
 
     particles.current = Array.from({ length: particleCount }, () => {
-      const baseX = Math.random() * dimensions.width;
-      const baseY = Math.random() * dimensions.height;
+      const baseX = secureRandomFloat() * dimensions.width;
+      const baseY = secureRandomFloat() * dimensions.height;
       return {
         baseX,
         baseY,
         x: baseX,
         y: baseY,
-        radius: Math.random() * 2 + 0.5,
-        opacity: Math.random() * 0.6 + 0.2,
+        radius: secureRandomFloat() * 2 + 0.5,
+        opacity: secureRandomFloat() * 0.6 + 0.2,
       };
     });
 

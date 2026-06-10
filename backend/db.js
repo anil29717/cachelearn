@@ -38,7 +38,7 @@ async function execSchema(sql) {
   if (typeof sql !== 'string' || sql.includes('\0')) {
     throw new Error('Invalid schema statement');
   }
-  await pool.query(sql);
+  await pool.execute(sql, []);
 }
 
 export async function initDb() {

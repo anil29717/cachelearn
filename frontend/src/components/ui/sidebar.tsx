@@ -6,6 +6,7 @@ import { VariantProps, cva } from "class-variance-authority";
 import { PanelLeftIcon } from "lucide-react";
 
 import { useIsMobile } from "./use-mobile";
+import { secureRandomInt } from "../../utils/secureRandom";
 import { cn } from "./utils";
 import { Button } from "./button";
 import { Input } from "./input";
@@ -639,9 +640,9 @@ function SidebarMenuSkeleton({
 }: React.ComponentProps<"div"> & {
   showIcon?: boolean;
 }) {
-  // Random width between 50 to 90%.
+  // Skeleton width 50–90% (UI-only secure random).
   const width = React.useMemo(() => {
-    return `${Math.floor(Math.random() * 40) + 50}%`;
+    return `${secureRandomInt(50, 90)}%`;
   }, []);
 
   return (

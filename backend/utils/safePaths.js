@@ -21,7 +21,7 @@ function stripNullBytes(s) {
   return s.trim();
 }
 
-function assertWithinBase(baseDir, candidatePath) {
+export function assertWithinBase(baseDir, candidatePath) {
   const base = path.resolve(baseDir);
   const candidate = path.resolve(candidatePath);
   const rel = path.relative(base, candidate);
@@ -45,8 +45,9 @@ export function getSafePathUnderBase(absoluteBaseDir, userInput) {
   if (segments.some((seg) => seg === '.' || seg === '..')) {
     throw new PathTraversalError('Invalid path');
   }
-  const resolved = path.resolve(path.resolve(absoluteBaseDir), ...segments);
-  return assertWithinBase(absoluteBaseDir, resolved).candidate;
+  const base = path.resolve(absoluteBaseDir);
+  const resolved = path.join(base, ...segments);
+  return assertWithinBase(base, resolved).candidate;
 }
 
 /**

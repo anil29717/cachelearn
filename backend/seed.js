@@ -3,9 +3,10 @@ import path from 'path';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import pool, { initDb, query } from './db.js';
+import { getSeedStatePath } from './config/storagePaths.js';
 import { buildStringInClause } from './utils/sqlSafety.js';
 
-const seedStatePath = path.resolve('storage', 'seed-users.json');
+const seedStatePath = getSeedStatePath();
 
 function randomString(size = 8) {
   return crypto.randomBytes(size).toString('base64url');

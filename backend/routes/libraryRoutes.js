@@ -7,6 +7,9 @@ import { assertPositiveIntIds } from '../utils/sqlSafety.js';
 import crypto from 'crypto';
 import { authMiddleware } from '../middleware/auth.js';
 import { logEvent } from '../logger.js';
+import { libraryStorageRoot, storageAbsRoot } from '../config/storagePaths.js';
+import { parsePositiveIntParam } from '../utils/parsePositiveInt.js';
+import { parseBytesRangeHeader } from '../utils/parseRangeHeader.js';
 import {
   assertAbsoluteUnderStorageRoot,
   createVerifiedReadStream,
@@ -36,15 +39,28 @@ import { isSafeDisplayName, sanitizeDisplayName } from '../utils/safeDisplay.js'
 
 const router = express.Router();
 
-const storageRoot = path.resolve('storage', 'library');
-const storageAbsRoot = path.resolve('storage');
-fs.mkdirSync(storageRoot, { recursive: true });
+const storageRoot = libraryStorageRoot;
 
-function parsePositiveIntParam(value) {
-  const s = String(value ?? '').trim();
-  if (!/^[1-9]\d*$/.test(s)) return null;
-  const n = Number(s);
-  return Number.isSafeInteger(n) ? n : null;
+const MAX_FOLDER_TREE_DEPTH = 64;
+const MAX_FOLDER_ROWS = 10_000;
+const MAX_FOLDER_ACCESS_WRITES = 1000;
+
+function parseRangeForFile(rangeHeader, fileSize) {
+  const parsed = parseBytesRangeHeader(rangeHeader);
+  if (!parsed) return { error: 'Invalid range' };
+  const start = parsed.start;
+  const end = parsed.end == null ? fileSize - 1 : parsed.end;
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    start < 0 ||
+    end < 0 ||
+    start > end ||
+    end >= fileSize
+  ) {
+    return { error: 'Invalid range' };
+  }
+  return { start, end };
 }
 
 function sanitizeDownloadName(name) {
@@ -221,7 +237,12 @@ async function prepareLibraryUpload(req, res, next) {
 async function getSubtreeFolderIds(rootId) {
   const ids = [rootId];
   let frontier = assertPositiveIntIds([rootId]);
+  let depth = 0;
   while (frontier.length) {
+    depth += 1;
+    if (depth > MAX_FOLDER_TREE_DEPTH || ids.length > MAX_FOLDER_ROWS) {
+      throw Object.assign(new Error('Folder tree too large'), { statusCode: 400 });
+    }
     const kids = await queryInList('SELECT id FROM content_folders WHERE parent_id IN', frontier);
     frontier = assertPositiveIntIds(kids.map((k) => k.id));
     ids.push(...frontier);
@@ -316,6 +337,10 @@ router.get('/folders', authMiddleware, async (req, res) => {
        GROUP BY f.id, f.name, f.slug, f.parent_id, f.visibility, f.created_by, f.created_at
        ORDER BY f.parent_id IS NULL DESC, f.name ASC`
     );
+
+    if (all.length > MAX_FOLDER_ROWS) {
+      return res.status(400).json({ error: 'Too many folders to list' });
+    }
 
     if (req.user?.role === 'admin') {
       return res.json({ folders: all });
@@ -751,23 +776,11 @@ router.get('/files/:fileId/stream', authMiddleware, libraryReadLimiter, async (r
       return;
     }
 
-    const rangeMatch = /^bytes=(\d*)-(\d*)$/i.exec(String(range).trim());
-    if (!rangeMatch) {
-      return res.status(416).json({ error: 'Invalid range' });
+    const rangeParsed = parseRangeForFile(range, fileSize);
+    if (rangeParsed.error) {
+      return res.status(416).json({ error: rangeParsed.error });
     }
-    const start = rangeMatch[1] === '' ? 0 : Number(rangeMatch[1]);
-    const end = rangeMatch[2] === '' ? fileSize - 1 : Number(rangeMatch[2]);
-
-    if (
-      !Number.isSafeInteger(start) ||
-      !Number.isSafeInteger(end) ||
-      start < 0 ||
-      end < 0 ||
-      start > end ||
-      end >= fileSize
-    ) {
-      return res.status(416).json({ error: 'Invalid range' });
-    }
+    const { start, end } = rangeParsed;
 
     const chunkSize = end - start + 1;
     res.writeHead(206, {
@@ -855,6 +868,9 @@ router.put('/folders/:folderId/access', authMiddleware, requireAdmin, async (req
       " AND role = 'employee'"
     );
     const normalized = empRows.map((r) => r.id);
+    if (normalized.length > MAX_FOLDER_ACCESS_WRITES) {
+      return res.status(400).json({ error: 'Too many users in access list' });
+    }
 
     await query('DELETE FROM folder_access WHERE folder_id = ?', [folderId]);
     for (const uid of normalized) {
@@ -878,11 +894,20 @@ router.delete('/folders/:folderId', authMiddleware, requireAdmin, libraryMutatio
     const rows = await query('SELECT id, slug FROM content_folders WHERE id = ?', [folderId]);
     if (!rows.length) return res.status(404).json({ error: 'Folder not found' });
 
-    const subtreeIds = await getSubtreeFolderIds(folderId);
+    let subtreeIds;
+    try {
+      subtreeIds = await getSubtreeFolderIds(folderId);
+    } catch (e) {
+      if (e?.statusCode === 400) return res.status(400).json({ error: e.message || 'Folder tree too large' });
+      throw e;
+    }
     const fileRows = await queryInList(
       'SELECT relative_path FROM folder_files WHERE folder_id IN',
       subtreeIds
     );
+    if (fileRows.length > MAX_FOLDER_ROWS) {
+      return res.status(400).json({ error: 'Too many files in folder tree' });
+    }
     for (const fr of fileRows) {
       try {
         await unlinkVerifiedFileUnderBase(storageAbsRoot, fr.relative_path);
